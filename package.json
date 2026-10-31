@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Long-lived minimal Chrome rooms for perch: one persistent profile each, CDP on host loopback behind a token relay.",
+  "description": "Gives your AI agents their own browsers to work in, on your Mac.",
   "bin": { "rooms": "rooms.mjs" },
   "scripts": { "test": "node --test test/" },
   "engines": { "node": ">=22.16" }
