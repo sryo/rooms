@@ -8,7 +8,9 @@ import { randomBytes } from "node:crypto";
 const KEYS = { Enter: 13, Tab: 9, Backspace: 8, Escape: 27, ArrowUp: 38, ArrowDown: 40, ArrowLeft: 37, ArrowRight: 39, Delete: 46 };
 const MAX_BODY = 8192;
 
-export async function startViewer({ wsUrl, connect, signin = null, log = () => {}, port = 0 }) {
+// With `signin`, onSignedIn is called once the tab is on that site past its sign-in page: same
+// origin, no `signedOut` path, no visible password field (the rule `rooms check` uses).
+export async function startViewer({ wsUrl, connect, signin = null, signedOut = null, onSignedIn = null, pollMs = 2000, log = () => {}, port = 0 }) {
   const cdp = await connect(wsUrl);
   const viewToken = randomBytes(16).toString("hex");
   const expected = signin ? new URL(signin).origin : null;
@@ -31,6 +33,20 @@ export async function startViewer({ wsUrl, connect, signin = null, log = () => {
   });
   await cdp.send("Page.startScreencast", { format: "jpeg", quality: 60, maxWidth: 1440, maxHeight: 900, everyNthFrame: 1 }, sessionId);
 
+  let watching = null;
+  if (signin && onSignedIn) {
+    const pattern = signedOut ? new RegExp(signedOut, "i") : null;
+    const look = "({href: location.href, origin: location.origin, pw: [...document.querySelectorAll('input[type=password]')].some((e) => e.offsetParent !== null)})";
+    watching = setInterval(async () => {
+      let v;
+      try { v = (await cdp.send("Runtime.evaluate", { expression: look, returnByValue: true }, sessionId)).result.value; } catch { return; }
+      if (!watching || !v || v.origin !== expected || v.pw) return;
+      const u = new URL(v.href);
+      if (pattern?.test(u.pathname + u.search)) return;
+      clearInterval(watching); watching = null;
+      onSignedIn(v.href);
+    }, pollMs);
+  }
   const origin = async () => (await cdp.send("Runtime.evaluate", { expression: "location.origin", returnByValue: true }, sessionId)).result.value;
   const mouse = async (x, y) => {
     for (const type of ["mousePressed", "mouseReleased"]) await cdp.send("Input.dispatchMouseEvent", { type, x, y, button: "left", clickCount: 1 }, sessionId);
@@ -56,7 +72,7 @@ export async function startViewer({ wsUrl, connect, signin = null, log = () => {
       }
       if (req.method === "GET" && route === "origin") return send(200, { origin: await origin() });
       if (req.method !== "POST") return send(405, { error: "method" });
-      if (req.headers.origin !== selfOrigin) return send(403, { error: "cross_origin" });
+      if (req.headers.origin !== selfOrigin && req.headers.origin !== selfOrigin.replace("127.0.0.1", "localhost")) return send(403, { error: "cross_origin" });
       const body = await readJson(req);
       if (body === TOO_BIG) return send(413, { error: "too_big" });
       if (route === "input") {
@@ -96,7 +112,9 @@ export async function startViewer({ wsUrl, connect, signin = null, log = () => {
   return {
     origin: selfOrigin,
     url: `${selfOrigin}/v/${viewToken}/`,
+    targetId: target.targetId,
     close: () => {
+      clearInterval(watching); watching = null;
       for (const res of clients) res.end();
       srv.closeAllConnections?.();
       srv.close();

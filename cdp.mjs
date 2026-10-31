@@ -1,5 +1,6 @@
 // Minimal CDP client over Node's global WebSocket, limited to an allowlist: nothing that reads
-// cookies or storage, nothing that brings a window to the front.
+// cookies or storage, nothing that brings a window to the front. The one exception, cookieExpiry,
+// reads a site's cookies but returns only the latest expiry; the values are dropped here.
 export const CDP_ALLOWED = new Set([
   "Target.getTargets", "Target.createTarget", "Target.attachToTarget", "Target.closeTarget",
   "Page.enable", "Page.navigate", "Page.captureScreenshot",
@@ -28,15 +29,23 @@ export async function connectCdp(wsUrl, { WebSocket = globalThis.WebSocket, time
     } else for (const fn of listeners.get(msg.method) ?? []) fn(msg.params, msg.sessionId);
   };
   ws.onclose = () => { for (const p of pending.values()) { clearTimeout(p.t); p.rej(new Error(`${p.method}: connection closed`)); } pending.clear(); };
+  const raw = (method, params, sessionId) => {
+    const i = ++id;
+    ws.send(JSON.stringify({ id: i, method, params, ...(sessionId ? { sessionId } : {}) }));
+    return new Promise((res, rej) => {
+      const t = setTimeout(() => { pending.delete(i); rej(new Error(`${method}: timeout after ${timeoutMs} ms`)); }, timeoutMs);
+      pending.set(i, { res, rej, t, method });
+    });
+  };
   return {
     send(method, params = {}, sessionId) {
       if (!CDP_ALLOWED.has(method)) throw new Error(`cdp: ${method} is not allowed`);
-      const i = ++id;
-      ws.send(JSON.stringify({ id: i, method, params, ...(sessionId ? { sessionId } : {}) }));
-      return new Promise((res, rej) => {
-        const t = setTimeout(() => { pending.delete(i); rej(new Error(`${method}: timeout after ${timeoutMs} ms`)); }, timeoutMs);
-        pending.set(i, { res, rej, t, method });
-      });
+      return raw(method, params, sessionId);
+    },
+    async cookieExpiry(origin, sessionId) {
+      const { cookies } = await raw("Network.getCookies", { urls: [origin] }, sessionId);
+      const last = Math.max(...cookies.map((c) => c.expires).filter((e) => e > 0));
+      return Number.isFinite(last) ? new Date(last * 1000).toISOString() : null;
     },
     on(method, fn) { if (!listeners.has(method)) listeners.set(method, []); listeners.get(method).push(fn); },
     close() { ws.close(); },

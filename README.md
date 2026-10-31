@@ -1,8 +1,10 @@
 # rooms
 
-rooms gives your AI agents their own browsers to work in, so they stop borrowing yours. Each one runs on your Mac, out of sight, and you can watch it and take over whenever you want. Nothing goes to the cloud.
+rooms gives your AI agents their own browsers to work in, so they stop borrowing yours. A room is one Chromium on your Mac, set up for one job and kept signed in. You sign in to each site once, or copy a few sessions over from Chrome, and from then on your agent opens tabs, clicks and types there.
 
-A room is one Chromium, set up for one job and kept signed in. You sign in to each site once, or copy a few sessions over from Chrome, and from then on your agent opens tabs, clicks and types there. It never moves your mouse or takes over your windows, and it keeps working while your Mac is locked.
+A room runs out of sight and keeps working while your Mac is locked. It never moves your mouse or takes over your windows, and you can watch it and take over whenever you want. Nothing goes to the cloud.
+
+rooms is made for [perch](https://github.com/sryo/perch), which lets your agents use a browser.
 
 ## Install
 
@@ -10,10 +12,9 @@ A room is one Chromium, set up for one job and kept signed in. You sign in to ea
 brew install container && container system start
 git clone https://github.com/sryo/rooms && cd rooms
 container build -t rooms-chrome:latest -f image/Dockerfile .
+container builder stop
 npm link
 ```
-
-Needs macOS 26+ and Apple silicon.
 
 ## Use
 
@@ -21,46 +22,51 @@ Needs macOS 26+ and Apple silicon.
 rooms init work                              # create the room
 rooms up work                                # start it
 rooms site add work https://github.com       # a site to stay signed in to
-rooms view work --signin https://github.com  # watch, take over, sign in once
-rooms check work                             # which sites are still signed in
-rooms status | down work
+rooms signin work https://github.com         # watch, take over, sign in once (Ctrl-C to close)
+rooms check work                             # which sites are still signed in, and until when
+rooms status                                 # every room, and since when the up ones started
+rooms down work                              # stop it
 ```
 
-To copy selected sessions from Chrome after the room has been started and stopped once:
+A running room holds on to the memory it has used, so stop the ones you aren't using. Their sign-ins are kept for next time. `rooms set work idle=30m` stops a room nothing has used for that long, while `autostart` keeps it watched; stopping closes its tabs, so leave it off for a room where you review what an agent left open.
+
+Keep it to two or three rooms, one per kind of job (say `jobs`, `figma` and `general`), and seed each from Chrome, so you sign in as little as possible. Start and stop a new room once, add its sites, then:
 
 ```bash
-rooms down work
-rooms teleport work --from canary --sites github.com,linear.app
-rooms up work
-rooms site add work https://github.com
-rooms check work
+rooms signin work --from chrome github.com linear.app
 ```
 
-`--from` accepts `canary`, `chrome`, or an absolute Chrome profile path. Teleport reads a consistent snapshot of the source Cookies database, asks Keychain for that browser's Safe Storage secret, and copies only cookies for the named domains and their subdomains. It re-encrypts them for the room and leaves unrelated room cookies in place. The room must be down. A copied session may still require a fresh sign-in if the site binds it to the original device.
+That copies those sites' cookies (only cookies: passwords and other site data stay in Chrome), starts the room, checks its sites and names any that still need `rooms signin work <url>`. `--from` also takes `canary` or an absolute Chrome profile path. macOS asks to let rooms read Chrome's key; allow it.
 
-For a profile checkpoint, shut the room down so Chromium flushes its data, then snapshot it:
+Set a room up while it's down, and before signing in, since a new user agent can sign sites out:
+- `rooms set work memory=6G` gives a heavy room more memory (3G by default).
+- `rooms set mobile device=phone` makes a room look like a phone; `device=desktop` undoes it. `rooms flags set` takes your own user agent, touch, scale and window size flags instead.
 
-```bash
-rooms down work
-rooms checkpoint work before-update
-rooms checkpoints work
-rooms up work
-```
+Also:
+- `rooms status work --deep` runs a room's checks and says how to fix each one that fails.
+- `rooms logs work` shows what happened to a room: up, down, crashes, idle stops, checks, imports and sign-in handoffs. `--follow --until handoff.ended` waits for the next one, which is how an agent waits for you to finish signing in.
+- `rooms rotate work` gives a room a new token without restarting it, so nothing signs out.
+- `rooms autostart work on` starts a room at every login and restarts it if it crashes; a room you `rooms down` stays down. `off` undoes it.
+- `rooms snapshot save work <name>` snapshots a stopped room's profile. `rooms snapshot restore work <name>` brings it back after damage and keeps the profile it replaces; `snapshot list` shows both, and `snapshot delete` removes one.
+- Output is for people in a terminal, and JSON when piped or with `--json`.
+- `rooms` on its own lists every command. Older names (`list`, `doctor`, `teleport`, `checkpoint`, `restore`, `prune`, `view --signin`) still work.
 
-Use `rooms restore work before-update` only to recover a damaged profile, with the room down. Restore preserves the replaced profile under `~/.rooms/replaced/work/`. `rooms prune work before-update` removes that checkpoint. Checkpoints request APFS copy-on-write clones and fall back to regular copies when cloning is unavailable. Before starting a room, `up` compares the profile's `Last Version` with the image's Chromium version and refuses a downgrade that could damage the profile.
+## With perch
 
-`rooms doctor work` checks the profile, container and CDP endpoint and returns a typed state. `rooms watch work` probes CDP every 30 seconds and restarts the same profile after three consecutive failures; a deliberate `rooms down` stays down. `rooms autostart work` writes a LaunchAgent that starts the monitor at the next login and brings up a room that was not deliberately stopped. `rooms autostart work --remove` removes that login agent.
+`list_tabs {app:"room"}` lists the tabs in your rooms and `new_tab {app:"room:work"}` opens one, in its own window so it keeps drawing. Every other tool takes that tab as `target: {tabId}`; without a target, perch drives your own browser, not the room. Anything else that speaks CDP connects through `rooms endpoint work --ws`.
 
-Set Chromium flags while a room is down, preferably before signing in. For a mobile site: `rooms flags set mobile '--user-agent=Mozilla/5.0 (Linux; Android 14) Mobile' --touch-events=enabled`, then `rooms up mobile`. `rooms flags list mobile` shows the saved flags. The allowlist covers user agent, touch events, device scale and window size; each flag is passed as one argument, including spaces in a user agent.
+While you watch a room in `rooms view` or `rooms signin`, you hold the tab it shows, and agents get `tab_held` until you close it (for `signin`, until the site is signed in).
 
-The image disables Chromium's password-saving prompt and first-run promotions through managed policy. Shared memory is half the configured room RAM, capped at 2 GiB. The image still launches with `--no-sandbox` while its sandbox behavior in the container VM is being verified.
-
-## For agents
-
-[perch](https://github.com/sryo/perch) drives a room's tabs as `room:<name>:<targetId>`: `list_tabs {app:"room"}` lists them, `new_tab {app:"room:work"}` opens one, and any tool then takes that `target.tabId`.
-
-Anything else that speaks CDP connects through `rooms endpoint work --ws`. For figma-cdp: `FIGMA_BACKEND=cdp FIGMA_CDP_PORT="$(rooms endpoint work --ws)"`.
+Tools can read `~/.rooms` directly, and `test/contract.test.mjs` and `test/leases.test.mjs` pin what they may rely on:
+- `rooms.json`: `version` 1, and `rooms.<name>` with `cdp.host`, `cdp.port` and `cdp.token` (the relay takes the token as the first path segment or as a Bearer header) and `sites[]` with `origin`, `url` and `signedOut`, a path pattern for a signed-out page.
+- `downloads/<name>/` is the room's `/downloads`.
+- `run/leases/<sha256 of the tabId>.json` is a tab's lease, in perch's format: `{owner, pid, last, active, held}`, changed only while holding the folder `<that file>.lock` (taken over after five seconds). A lease holds its tab while its process lives and it is `active` or `last` is under five seconds old. The viewer's lease has `owner: "user"`.
+- `control/<name>/` is rooms' own: `token`, `events.jsonl` (one `{at, event, …}` per line, capped, the older half in `events.jsonl.1`), `owner.json` (who started the room, and when) and `watcher.json`.
+- `GET <port>/health` needs no token and answers `{ok, protocol}`. `GET <endpoint>/rooms/activity` answers `{idleMs}`, the time since a client last used the room.
+- After `rooms rotate`, the room's open connections close; read the token again from `rooms.json` and reconnect.
 
 ## Safety
 
-A room is reachable only from your Mac, and only with its token. Perch agents can drive pages but can't read the room's cookies. The `rooms teleport` CLI explicitly reads selected source cookies when you run it. The sign-in sheet types your password into the room only while the tab is on the site you named, and never stores or logs it.
+Only your Mac can reach a room. Anything you connect to it can use all its sign-ins, so connect only agents you trust with those accounts, and give separate jobs separate rooms. rooms never stores your passwords. `rooms init` keeps `~/.rooms` out of Time Machine, so its sessions don't end up on your backup disk.
+
+The room can write anything in its profile, so rooms never writes or deletes through what it finds there. Its own files live in `control/<name>/`, which the room can only read. This needs the image rebuilt (`container build`, as in Install) and the room restarted; until then the room ignores its device and flags settings and is never stopped for being idle.

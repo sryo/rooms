@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createRooms, RoomsError } from "../rooms.mjs";
+import { createRooms, RoomsError, main } from "../rooms.mjs";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { connectCdp } from "../cdp.mjs";
@@ -47,7 +47,7 @@ test("check: a site that lands on its own origin is signed in; a login path or a
   assert.equal(chrome.targets.size, 0, "check closes every tab it opened");
   assert.ok(chrome.log.filter((m) => m.method === "Target.createTarget").every((m) => m.params.url === "about:blank"));
   assert.equal(chrome.log.filter((m) => m.method === "Page.navigate").length, 3);
-  assert.ok(!chrome.log.some((m) => /^(Network|Storage)\./.test(m.method)), "reads no cookies");
+  assert.ok(chrome.log.filter((m) => /^(Network|Storage)\./.test(m.method)).every((m) => m.method === "Network.getCookies"), "reads cookies only for their expiry");
 });
 
 test("check on a down room is room_down", async () => {
@@ -63,7 +63,7 @@ test("down closes Chromium over CDP first, so cookies are flushed to the profile
   const home = tmpHome();
   const rooms = createRooms({
     home, runtime, fetch: fakeFetch(), sleep: async () => {},
-    connect: async (url) => { const c = await connectCdp(url, { WebSocket: chrome.WebSocket, timeoutMs: 500 }); const send = c.send; c.send = (m, ...a) => { if (m === "Browser.close") assert.ok(existsSync(join(home, "profiles", "work", ".rooms-stop")), "stop marker must precede Browser.close"); order.push(m); return send(m, ...a); }; return c; },
+    connect: async (url) => { const c = await connectCdp(url, { WebSocket: chrome.WebSocket, timeoutMs: 500 }); const send = c.send; c.send = (m, ...a) => { if (m === "Browser.close") assert.ok(existsSync(join(home, "control", "work", "stop")), "stop marker must precede Browser.close"); order.push(m); return send(m, ...a); }; return c; },
   });
   await rooms.init("work");
   await rooms.up("work");
@@ -74,7 +74,7 @@ test("down closes Chromium over CDP first, so cookies are flushed to the profile
   const stop = runtime.calls.find((c) => c[0] === "stop");
   assert.deepEqual(stop.slice(0, 3), ["stop", "--time", "15"]);
   await rooms.up("work");
-  assert.equal(existsSync(join(home, "profiles", "work", ".rooms-stop")), false, "up clears a prior stop request");
+  assert.equal(existsSync(join(home, "control", "work", "stop")), false, "up clears a prior stop request");
 });
 
 test("check: one site's failure (a redirect that drops the page, a load error) never aborts the others", async () => {
@@ -109,5 +109,41 @@ test("down writes nothing the image could restart on: Browser.close comes before
   await rooms.up("work");
   await rooms.down("work");
   assert.ok(chrome.closedBrowser);
-  assert.deepEqual(runtime.calls.at(-2).slice(0, 1), ["stop"]);
+  assert.deepEqual(runtime.calls.map((c) => c[0]).filter((c) => c !== "list").slice(-2), ["stop", "delete"]);
+});
+
+test("check: a signed-out site carries the command that signs it back in, and --json prints the results for scripts", async () => {
+  const chrome = new FakeChrome({ redirects: { "https://www.figma.com/files": "https://www.figma.com/login" } });
+  const rooms = make(chrome);
+  await rooms.init("work");
+  await rooms.up("work");
+  await rooms.siteAdd("work", "https://app.a.test/");
+  await rooms.siteAdd("work", "https://www.figma.com/files");
+  const lines = [];
+  const exit = await main(["check", "work", "--json"], rooms, (l) => lines.push(l));
+  assert.equal(exit, 1);
+  const r = JSON.parse(lines.join(""));
+  assert.equal(r.find((s) => s.origin === "https://app.a.test").remedy, undefined);
+  assert.equal(r.find((s) => s.origin === "https://www.figma.com").remedy, "rooms signin work https://www.figma.com/files");
+});
+
+test("check: each site is signed_in, signed_out or unknown (when it couldn't be checked), with when its cookies run out", async () => {
+  const chrome = new FakeChrome({
+    redirects: { "https://www.figma.com/files": "https://www.figma.com/login" },
+    navError: { "https://down.test/": "net::ERR_NAME_NOT_RESOLVED" },
+    cookies: { "https://app.a.test": [{ name: "sid", expires: 1893456000 }, { name: "pref", expires: 1800000000 }, { name: "tmp", expires: -1 }] },
+  });
+  const rooms = make(chrome);
+  await rooms.init("work");
+  await rooms.up("work");
+  for (const u of ["https://app.a.test/", "https://www.figma.com/files", "https://down.test/"]) await rooms.siteAdd("work", u);
+  const r = Object.fromEntries((await rooms.check("work")).map((s) => [s.origin, s]));
+  assert.equal(r["https://app.a.test"].state, "signed_in");
+  assert.equal(r["https://app.a.test"].expires, new Date(1893456000 * 1000).toISOString());
+  assert.equal(r["https://www.figma.com"].state, "signed_out");
+  assert.equal(r["https://down.test"].state, "unknown");
+  assert.equal(r["https://down.test"].remedy, "rooms check work");
+  assert.ok(!("remedy" in r["https://app.a.test"]));
+  const logged = (await rooms.events("work")).find((e) => e.event === "check");
+  assert.deepEqual(logged.sites, { "https://app.a.test": "signed_in", "https://www.figma.com": "signed_out", "https://down.test": "unknown" });
 });

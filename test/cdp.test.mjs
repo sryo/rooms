@@ -44,3 +44,13 @@ test("a call with no answer times out", async () => {
   await assert.rejects(() => c.send("Runtime.evaluate", { expression: "1" }), /timeout/);
   c.close();
 });
+
+test("cookieExpiry gives only when a site's longest-lived cookie runs out; cookie values never leave the client", async () => {
+  const chrome = new FakeChrome({ cookies: { "https://a.test": [{ name: "sid", value: "secret", expires: 1893456000 }, { name: "s", value: "x", expires: -1 }] } });
+  const c = await connectCdp("ws://x", { WebSocket: chrome.WebSocket });
+  const r = await c.cookieExpiry("https://a.test", "S1");
+  assert.equal(r, new Date(1893456000 * 1000).toISOString());
+  assert.equal(await c.cookieExpiry("https://none.test", "S1"), null);
+  assert.throws(() => c.send("Network.getCookies", { urls: ["https://a.test"] }), /not allowed/);
+  c.close();
+});

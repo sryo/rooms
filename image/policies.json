@@ -1,4 +1,16 @@
 {
   "PasswordManagerEnabled": false,
-  "PromotionalTabsEnabled": false
+  "PromotionalTabsEnabled": false,
+  "AutofillAddressEnabled": false,
+  "AutofillCreditCardEnabled": false,
+  "SyncDisabled": true,
+  "BrowserSignin": 0,
+  "ExtensionInstallBlocklist": [
+    "*"
+  ],
+  "DefaultNotificationsSetting": 2,
+  "URLBlocklist": [
+    "chrome://*",
+    "devtools://*"
+  ]
 }

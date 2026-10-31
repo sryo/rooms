@@ -35,12 +35,27 @@ export const cookieFile = (profile) => {
   return null;
 };
 
+// Not the full Public Suffix List: the ccTLD second levels and shared hosting domains people are
+// likely to type. Naming one would copy the cookies of every site under it.
+const CC_SECOND_LEVELS = new Set(["ac", "co", "com", "edu", "gob", "gov", "gv", "ltd", "mil", "ne", "net", "nom", "or", "org", "plc", "sch"]);
+const SHARED_HOSTS = new Set([
+  "appspot.com", "azurewebsites.net", "blogspot.com", "cloudfront.net", "firebaseapp.com", "fly.dev", "github.io",
+  "gitlab.io", "glitch.me", "herokuapp.com", "netlify.app", "ngrok-free.app", "ngrok.io", "onrender.com", "pages.dev",
+  "s3.amazonaws.com", "vercel.app", "web.app", "workers.dev",
+]);
+const isPublicSuffix = (host) => {
+  if (SHARED_HOSTS.has(host)) return true;
+  const labels = host.split(".");
+  return labels.length === 2 && CC_SECOND_LEVELS.has(labels[0]) && /^[a-z]{2}$/.test(labels[1]);
+};
+
 export function siteNames(sites) {
   if (!Array.isArray(sites) || !sites.length) throw new Error("no_sites: name at least one site");
   return sites.map((s) => {
     if (typeof s !== "string" || !/^[a-z0-9.-]+$/i.test(s)) throw new Error(`bad_site: invalid site '${s}'`);
     const host = s.toLowerCase().replace(/^\./, "").replace(/\.$/, "");
     if (!host.includes(".") || host.includes("..") || host.startsWith("-") || host.endsWith("-")) throw new Error(`bad_site: invalid site '${s}'`);
+    if (isPublicSuffix(host)) throw new Error(`public_suffix: '${s}' is shared by many sites; name the site itself, like example.${host}`);
     return host;
   });
 }

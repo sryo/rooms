@@ -30,8 +30,8 @@ test("software WebGL is opted in (no GPU in the VM) and the anti-throttling flag
   for (const f of ["--use-angle=swiftshader-webgl", "--enable-unsafe-swiftshader", "--disable-background-timer-throttling", "--disable-backgrounding-occluded-windows", "--disable-renderer-backgrounding"]) flag(f);
 });
 
-test("Chromium reads per-room flags as whole lines from the mounted profile", () => {
-  assert.match(entry, /\.rooms-flags/);
+test("Chromium reads per-room flags as whole lines from the read-only control mount", () => {
+  assert.match(entry, /< \/rooms\/flags/);
   assert.match(entry, /IFS= read -r flag/);
   assert.match(entry, /set -- "\$@" "\$flag"/);
   assert.match(entry, /chromium "\$@"/);
@@ -64,11 +64,38 @@ test("the image installs a managed policy that disables password saving and firs
 test("Chromium is restarted only after a crash: a clean exit (Browser.close on down) is not relaunched", () => {
   assert.match(entry, /rc=\$\?/);
   assert.match(entry, /\[ "\$rc" = 0 \]/);
-  assert.match(entry, /\[ -e \/profile\/\.rooms-stop \]/);
-  assert.ok(entry.indexOf("[ -e /profile/.rooms-stop ]") < entry.indexOf('if [ "$rc" = 0 ]'));
+  assert.match(entry, /\[ -e \/rooms\/stop \]/);
+  assert.ok(entry.indexOf("[ -e /rooms/stop ]") < entry.indexOf('if [ "$rc" = 0 ]'));
 });
 
 test("the relay and Xvfb are supervised: each runs in a restart loop", () => {
   assert.match(entry, /while :; do node \/opt\/rooms\/relay\.mjs/);
   assert.match(entry, /while :; do Xvfb :99/);
+});
+
+test("the guest clears its own compiled-script cache before Chromium starts", () => {
+  assert.match(entry, /rm -rf "\/profile\/Default\/Code Cache"/);
+  assert.ok(entry.indexOf("Code Cache") < entry.indexOf('chromium "$@"'));
+});
+
+test("the policy keeps personal data and add-ons out of the room: no form autofill, no sync or browser sign-in, no extensions", () => {
+  const policy = JSON.parse(readFileSync(policyFile, "utf8"));
+  assert.equal(policy.AutofillAddressEnabled, false);
+  assert.equal(policy.AutofillCreditCardEnabled, false);
+  assert.equal(policy.SyncDisabled, true);
+  assert.equal(policy.BrowserSignin, 0);
+  assert.deepEqual(policy.ExtensionInstallBlocklist, ["*"]);
+});
+
+test("the policy blocks notifications and the browser's own pages, but leaves pop-ups (OAuth sign-ins use them) and downloads alone", () => {
+  const policy = JSON.parse(readFileSync(policyFile, "utf8"));
+  assert.equal(policy.DefaultNotificationsSetting, 2);
+  assert.deepEqual(policy.URLBlocklist, ["chrome://*", "devtools://*"]);
+  assert.equal(policy.DefaultPopupsSetting, undefined);
+  assert.equal(policy.DownloadRestrictions, undefined);
+});
+
+test("the relay reads the token from the read-only control mount when it's there, else from the environment", () => {
+  assert.match(entry, /\[ -s \/rooms\/token \]/);
+  assert.match(entry, /export ROOMS_TOKEN_FILE=\/rooms\/token/);
 });

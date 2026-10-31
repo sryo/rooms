@@ -1,7 +1,8 @@
 // A fake Chrome behind a fake WebSocket: targets with a URL each, sessions, Runtime.evaluate over a
 // tiny page model (location, readyState, a focused field), Input recorded, screencast frames.
 export class FakeChrome {
-  constructor({ silent = [], redirects = {}, failEvals = 0, passwordAt = [], navError = {} } = {}) {
+  constructor({ silent = [], redirects = {}, failEvals = 0, passwordAt = [], navError = {}, cookies = {} } = {}) {
+    this.cookies = cookies; // origin -> [{name, expires}] (expires in seconds; -1 for a session cookie)
     this.failEvals = failEvals; // the next n Runtime.evaluate calls reject, as during a redirect
     this.passwordAt = new Set(passwordAt); // urls whose page shows a password field
     this.navError = navError; // url -> errorText
@@ -49,6 +50,7 @@ export class FakeChrome {
         if (e.includes("location.origin")) return ok({ result: { value: new URL(p.url).origin } });
         return ok({ result: { value: null } });
       }
+      case "Network.getCookies": return ok({ cookies: (params.urls ?? []).flatMap((u) => this.cookies[new URL(u).origin] ?? []) });
       case "Browser.close": this.closedBrowser = true; return ok();
       case "Input.insertText": { this.inserted.push({ text: params.text, sessionId }); const p = this.page(sessionId); if (p) p.len = (p.len || 0) + params.text.length; return ok(); }
       case "Input.dispatchMouseEvent": case "Input.dispatchKeyEvent": return ok();

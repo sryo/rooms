@@ -4,12 +4,17 @@
 # exits; the profile is never replaced.
 set -eu
 
-[ -n "${ROOMS_TOKEN:-}" ] || { echo "rooms: ROOMS_TOKEN missing; refusing to start" >&2; exit 64; }
+# The token: /rooms/token, which the host can rewrite to rotate it, or ROOMS_TOKEN from an older host.
+if [ -s /rooms/token ]; then export ROOMS_TOKEN_FILE=/rooms/token
+else [ -n "${ROOMS_TOKEN:-}" ] || { echo "rooms: ROOMS_TOKEN missing; refusing to start" >&2; exit 64; }; fi
 [ -d /profile ] || { echo "rooms: /profile not mounted; refusing to start (a fresh profile is signed out)" >&2; exit 65; }
 
 # A container that was killed leaves Chromium's singleton files naming the old hostname, which
 # makes the next Chromium refuse the profile. Only one Chromium runs per room, so they are stale.
 rm -f /profile/SingletonLock /profile/SingletonSocket /profile/SingletonCookie
+# V8's compiled-script cache is most of a profile's size and Chromium rebuilds it. Cleared here, in
+# the guest, because the host must not delete inside a folder the guest controls.
+rm -rf "/profile/Default/Code Cache"
 
 # Xvfb and the relay are restarted if they die: without either the room answers
 # nothing until someone runs down and up.
@@ -28,14 +33,16 @@ while [ "$stopping" = 0 ]; do
     --remote-allow-origins="http://127.0.0.1:${ROOMS_CDP_PORT}" \
     --no-first-run --no-default-browser-check \
     --password-store=basic \
-    --no-sandbox \
     --use-angle=swiftshader-webgl --enable-unsafe-swiftshader \
     --disable-background-timer-throttling \
     --disable-backgrounding-occluded-windows \
     --disable-renderer-backgrounding \
+    --disable-features=BackForwardCache,Translate,OptimizationHints,MediaRouter \
+    --disable-component-extensions-with-background-pages \
+    --disk-cache-size=67108864 \
     --window-size=1440,900
-  if [ -f /profile/.rooms-flags ]; then
-    while IFS= read -r flag; do [ -n "$flag" ] && set -- "$@" "$flag"; done < /profile/.rooms-flags
+  if [ -f /rooms/flags ]; then
+    while IFS= read -r flag; do [ -n "$flag" ] && set -- "$@" "$flag"; done < /rooms/flags
   fi
   chromium "$@" about:blank &
   chrome=$!
@@ -44,7 +51,7 @@ while [ "$stopping" = 0 ]; do
   [ "$stopping" = 0 ] || break
   # `rooms down` writes this before Browser.close. A nonzero exit during shutdown
   # must not race the host's container stop and restart Chromium on the profile.
-  if [ -e /profile/.rooms-stop ]; then echo "rooms: stop requested; waiting for container stop" >&2; while [ "$stopping" = 0 ]; do sleep 1; done; break; fi
+  if [ -e /rooms/stop ]; then echo "rooms: stop requested; waiting for container stop" >&2; while [ "$stopping" = 0 ]; do sleep 1; done; break; fi
   # A clean exit is Browser.close from `rooms down`, which stops the container
   # next: relaunching would start Chromium on the profile mid-stop.
   if [ "$rc" = 0 ]; then echo "rooms: chromium closed; waiting for stop" >&2; while [ "$stopping" = 0 ]; do sleep 1; done; break; fi

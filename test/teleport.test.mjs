@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { createRooms, RoomsError, main } from "../rooms.mjs";
@@ -126,4 +126,23 @@ test("CLI parses a named source and site list without printing cookie values", a
   assert.deepEqual(got, { name: "work", options: { from: "canary", sites: ["a.com", "b.com"] } });
   assert.match(output.join("\n"), /"copied":2/);
   assert.doesNotMatch(output.join("\n"), /cookie|secret/i);
+});
+
+test("teleport refuses a room whose cookie path runs through a link the guest could have planted", async () => {
+  const s = setup();
+  await s.rooms.init("work");
+  const outside = join(s.home, "outside", "Default");
+  mkdirSync(outside, { recursive: true });
+  cookiesDb(join(outside, "Cookies"), [[".x.test", "x", "untouched"]], ROOM_KEY);
+  symlinkSync(outside, join(s.home, "profiles", "work", "Default"));
+  assert.equal(await code(s.rooms.teleport("work", { from: s.srcProfile, sites: ["b.test"] })), "profile_link");
+  assert.deepEqual(read(join(outside, "Cookies"), ROOM_KEY), [[".x.test", "x", "untouched"]]);
+});
+
+test("teleport refuses a public suffix, which would copy every site under it", async () => {
+  const s = setup();
+  await room(s);
+  for (const site of ["co.uk", "com.ar", "github.io", "com"]) {
+    assert.equal(await code(s.rooms.teleport("work", { from: s.srcProfile, sites: [site] })), site === "com" ? "bad_site" : "public_suffix", site);
+  }
 });

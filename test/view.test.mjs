@@ -117,3 +117,34 @@ test("a secret that left the focused field unchanged reports not_typed", async (
   assert.equal((await r.json()).error, "not_typed");
   s.close();
 });
+
+test("the viewer opened as localhost instead of 127.0.0.1 can still drive the room", async () => {
+  const s = await setup();
+  try {
+    const r = await s.post("input", { type: "text", text: "x" }, { origin: s.v.origin.replace("127.0.0.1", "localhost") });
+    assert.equal(r.status, 200);
+  } finally { s.close(); }
+});
+
+test("the viewer says which tab it shows, and with a sign-in sheet, tells once when the tab is past the site's sign-in page", async () => {
+  const chrome = new FakeChrome({ redirects: { "https://app.a.test/home": "https://app.a.test/login" } });
+  let signedIn = 0;
+  const v = await startViewer({
+    wsUrl: "ws://room/devtools/browser/x",
+    connect: (u) => connectCdp(u, { WebSocket: chrome.WebSocket, timeoutMs: 500 }),
+    signin: "https://app.a.test/home",
+    signedOut: "(^|/)login([/?#]|$)",
+    onSignedIn: () => { signedIn++; },
+    pollMs: 10,
+  });
+  try {
+    assert.ok(chrome.targets.has(v.targetId));
+    await new Promise((r) => setTimeout(r, 60));
+    assert.equal(signedIn, 0, "still on the login page");
+    chrome.targets.get(v.targetId).url = "https://app.a.test/dashboard";
+    await new Promise((r) => setTimeout(r, 60));
+    assert.equal(signedIn, 1);
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(signedIn, 1, "only once");
+  } finally { v.close(); }
+});
