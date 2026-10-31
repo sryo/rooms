@@ -746,7 +746,7 @@ export async function main(argv, rooms = createRooms({ awake: macAwake, excludeF
       case "check": {
         const r = await rooms.check(name);
         if (json) print(r);
-        else for (const s of r) out(`${{ signed_in: "signed in ", signed_out: "SIGNED OUT", unknown: "UNKNOWN   " }[s.state]} ${s.origin}${s.remedy ? `  -> ${s.remedy}` : ""}`);
+        else for (const s of r) out(`${{ signed_in: "signed in ", signed_out: "SIGNED OUT", unknown: "UNKNOWN   " }[s.state]} ${s.origin}${s.signedIn && s.expires ? `  until ${s.expires.slice(0, 10)}` : ""}${s.remedy ? `  -> ${s.remedy}` : ""}`);
         return r.every((s) => s.signedIn) ? 0 : 1;
       }
       case "signin": {

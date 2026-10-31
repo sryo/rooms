@@ -91,3 +91,14 @@ test("signin --from says it copied cookies only, then starts the room, checks it
   const json = await run(["signin", "work", "--from", "chrome", "a.test"], spy({ teleport: { copied: 1 }, sites: [], up: { state: "up" } }));
   assert.deepEqual(JSON.parse(json.lines.join("")), { copied: 1, copiedOnly: "cookies" });
 });
+
+test("check says until when each signed-in site stays signed in", async () => {
+  const r = await run(["check", "work"], spy({ check: [
+    { origin: "https://github.com", state: "signed_in", signedIn: true, expires: "2026-12-01T10:00:00.000Z" },
+    { origin: "https://linear.app", state: "signed_in", signedIn: true, expires: null },
+    { origin: "https://figma.com", state: "signed_out", signedIn: false, expires: "2026-11-02T00:00:00.000Z", remedy: "rooms signin work https://figma.com" },
+  ] }), { tty: true });
+  assert.match(r.lines[0], /^signed in +https:\/\/github\.com +until 2026-12-01$/);
+  assert.match(r.lines[1], /^signed in +https:\/\/linear\.app$/);
+  assert.doesNotMatch(r.lines[2], /until/);
+});
