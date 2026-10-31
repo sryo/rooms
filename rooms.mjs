@@ -457,7 +457,7 @@ async function startRoom(name, { timeoutMs = 60000 } = {}) {
       add("cdp", "required", !running ? "skip" : browser ? "pass" : "fail", cdpError ? { detail: cdpError, remedy: `rooms down ${name} && ${remedies.up(name)}` } : {});
       let protocol = 0;
       if (browser) { try { const res = await fetch(`http://${room.cdp.host}:${room.cdp.port}/health`, { signal: AbortSignal.timeout(3000) }); if (res.ok) protocol = (await res.json()).protocol ?? 0; } catch {} }
-      add("image", "recommended", !browser ? "skip" : protocol >= 2 ? "pass" : "warn", browser && protocol < 2 ? { detail: "the room runs an older image", remedy: `container build -t rooms-chrome:latest -f image/Dockerfile . (in the rooms folder), then rooms down ${name} && ${remedies.up(name)}` } : {});
+      add("image", "recommended", !browser ? "skip" : protocol >= 2 ? "pass" : "warn", browser && protocol < 2 ? { detail: "the room runs an older image, so its device, flags and idle settings may not apply", remedy: `container build -t rooms-chrome:latest -f image/Dockerfile . (in the rooms folder), then rooms down ${name} && ${remedies.up(name)}` } : {});
       const lastCheck = readEvents(eventsFile(name)).filter((e) => e.event === "check").at(-1);
       const notIn = lastCheck ? Object.entries(lastCheck.sites ?? {}).filter(([, st]) => st !== "signed_in").map(([o]) => o) : [];
       add("sites", "info", !(room.sites ?? []).length ? "skip" : !lastCheck || notIn.length ? "warn" : "pass", (room.sites ?? []).length && (!lastCheck || notIn.length) ? { detail: lastCheck ? `not signed in at the last check: ${notIn.join(", ")}` : "never checked", remedy: remedies.check(name) } : {});
@@ -670,7 +670,7 @@ const USAGE = `usage: rooms init <name> | up <name> | down <name>
        rooms set <name> memory=4G idle=30m device=phone|desktop   used from the next up; idle stops
                                              a watched room nothing has used for that long, closing its tabs
        rooms snapshot save|list|restore|delete <name> [<id>]   a stopped room's profile
-       rooms autostart <name> on|off         keep the room up from login, restarting it if it crashes
+       rooms autostart <name> on|off         start it at login; restart it if its browser stops answering
        rooms endpoint <name> [--ws]          CDP endpoint with its token (http, or the browser ws URL)
        rooms rotate <name>                   a new token; the room keeps running and stays signed in
        rooms logs <name> [--follow] [--until <event>]   what happened to the room
