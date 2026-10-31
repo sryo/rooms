@@ -1,8 +1,10 @@
 // Tab leases, in perch's format and with its lock (perch/server.js roomLeaseChange): ~/.rooms/run/leases/
-// <sha256 of the tabId>.json holds {owner, pid, last, active, held}, and <that file>.lock is a folder
-// made atomically while one process changes it, taken over once older than five seconds.
+// <sha256 of the tabId>.json holds {owner, pid, last, active, stuck, tabId}, and <that file>.lock is a
+// folder made atomically while one process changes it, taken over once older than five seconds.
 // A lease holds its tab while its process lives and is mid-call (active) or within five seconds of
-// one. The viewer's lease is owned by "user" and stays active until the viewer closes.
+// one. stuck is a key or mouse button its holder pressed and hasn't released; it stays on the lease
+// until the next holder releases it. The viewer's lease is owned by "user" and stays active until
+// the viewer closes.
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -51,9 +53,13 @@ export function leaseHolder(home, tabId) {
 }
 
 // Takes the tab for the user, over any agent's lease (the person at the viewer wins); returns the
-// release, which removes the lease only while it is still this one.
+// release, which touches the lease only while it is still this one. It removes it, or with input
+// still stuck, leaves it ownerless so perch's next holder takes it and releases that input.
 export async function holdForUser(home, tabId, pid = process.pid) {
   const since = new Date().toISOString();
-  await change(home, tabId, () => ({ owner: "user", pid, last: Date.now(), active: true, held: null, since }));
-  return () => change(home, tabId, (s) => (s?.owner === "user" && s.pid === pid && s.since === since ? null : undefined));
+  await change(home, tabId, (s) => ({ owner: "user", pid, last: Date.now(), active: true, stuck: s?.stuck ?? null, tabId, since }));
+  return () => change(home, tabId, (s) => {
+    if (s?.owner !== "user" || s.pid !== pid || s.since !== since) return undefined;
+    return s.stuck ? { last: Date.now(), active: false, stuck: s.stuck, tabId } : null;
+  });
 }

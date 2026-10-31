@@ -15,7 +15,7 @@ test("a viewer's lease is a perch lease owned by the user: active, with its pid,
   const home = tmpHome();
   const release = await holdForUser(home, "room:work:T1");
   const s = JSON.parse(readFileSync(file(home, "room:work:T1"), "utf8"));
-  assert.deepEqual([s.owner, s.pid, s.active, s.held], ["user", process.pid, true, null]);
+  assert.deepEqual([s.owner, s.pid, s.active, s.stuck, s.tabId], ["user", process.pid, true, null, "room:work:T1"]);
   assert.ok(!Number.isNaN(Date.parse(s.since)));
   assert.deepEqual(leaseHolder(home, "room:work:T1"), { owner: "user", pid: process.pid });
   await release();
@@ -27,9 +27,9 @@ test("an agent mid-call holds its tab; one between calls (inactive past five sec
   const home = tmpHome();
   mkdirSync(join(home, "run", "leases"), { recursive: true });
   const put = (tabId, s) => writeFileSync(file(home, tabId), JSON.stringify(s));
-  put("room:w:A", { owner: "x", pid: process.pid, last: Date.now(), active: true, held: null });
-  put("room:w:B", { owner: "x", pid: process.pid, last: Date.now() - 60000, active: false, held: null });
-  put("room:w:C", { owner: "x", pid: 999999, last: Date.now(), active: true, held: null });
+  put("room:w:A", { owner: "x", pid: process.pid, last: Date.now(), active: true, stuck: null });
+  put("room:w:B", { owner: "x", pid: process.pid, last: Date.now() - 60000, active: false, stuck: null });
+  put("room:w:C", { owner: "x", pid: 999999, last: Date.now(), active: true, stuck: null });
   assert.deepEqual(leaseHolder(home, "room:w:A"), { owner: "x", pid: process.pid });
   assert.equal(leaseHolder(home, "room:w:B"), null);
   assert.equal(leaseHolder(home, "room:w:C"), null);
@@ -38,7 +38,24 @@ test("an agent mid-call holds its tab; one between calls (inactive past five sec
 test("releasing never removes a lease someone else took over meanwhile", async () => {
   const home = tmpHome();
   const release = await holdForUser(home, "room:work:T1");
-  writeFileSync(file(home, "room:work:T1"), JSON.stringify({ owner: "agent", pid: process.pid, last: Date.now(), active: true, held: null }));
+  writeFileSync(file(home, "room:work:T1"), JSON.stringify({ owner: "agent", pid: process.pid, last: Date.now(), active: true, stuck: null }));
   await release();
   assert.equal(JSON.parse(readFileSync(file(home, "room:work:T1"), "utf8")).owner, "agent");
+});
+
+test("the viewer keeps an agent's stuck key or button, and leaves it for the next holder to release", async () => {
+  const home = tmpHome();
+  const stuck = { type: "mouse", point: { x: 3, y: 4 } };
+  mkdirSync(join(home, "run", "leases"), { recursive: true });
+  writeFileSync(file(home, "room:work:T1"), JSON.stringify({ owner: "agent", pid: process.pid, last: Date.now(), active: false, stuck, tabId: "room:work:T1" }));
+  const release = await holdForUser(home, "room:work:T1");
+  assert.deepEqual(JSON.parse(readFileSync(file(home, "room:work:T1"), "utf8")).stuck, stuck);
+  await release();
+  const left = JSON.parse(readFileSync(file(home, "room:work:T1"), "utf8"));
+  assert.deepEqual(left.stuck, stuck);
+  assert.equal(left.tabId, "room:work:T1");
+  assert.equal(left.owner, undefined);
+  assert.equal(left.pid, undefined);
+  assert.equal(left.active, false);
+  assert.equal(leaseHolder(home, "room:work:T1"), null);
 });
