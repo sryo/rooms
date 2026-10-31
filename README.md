@@ -4,8 +4,6 @@ rooms gives your AI agents their own browsers to work in, so they stop borrowing
 
 ## Install
 
-You need macOS with Apple's `container`, and Node 22.16 or newer.
-
 ```bash
 brew install container && container system start
 git clone https://github.com/sryo/rooms && cd rooms
