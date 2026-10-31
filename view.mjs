@@ -55,9 +55,12 @@ export async function startViewer({ wsUrl, connect, signin = null, signedOut = n
     for (const type of ["keyDown", "keyUp"]) await cdp.send("Input.dispatchKeyEvent", { type, key: k, code: k, windowsVirtualKeyCode: KEYS[k], nativeVirtualKeyCode: KEYS[k] }, sessionId);
   };
 
-  let selfOrigin;
+  // A DNS-rebinding page (evil.example:<port> resolving to 127.0.0.1) is same-origin to itself, so
+  // its GETs carry no Origin. Only the loopback names on the bound port pass.
+  let selfOrigin, allowedHosts;
   const srv = http.createServer(async (req, res) => {
     const send = (status, body, type = "application/json") => { res.writeHead(status, { "content-type": type, "cache-control": "no-store" }); res.end(typeof body === "string" ? body : JSON.stringify(body)); };
+    if (!allowedHosts.has(req.headers.host?.toLowerCase())) return send(403, { error: "bad_host" });
     const prefix = `/v/${viewToken}/`;
     if (!req.url.startsWith(prefix)) return send(404, { error: "not_found" });
     const route = req.url.slice(prefix.length);
@@ -109,6 +112,7 @@ export async function startViewer({ wsUrl, connect, signin = null, signedOut = n
   srv.keepAliveTimeout = 1000;
   await new Promise((r) => srv.listen(port, "127.0.0.1", r));
   selfOrigin = `http://127.0.0.1:${srv.address().port}`;
+  allowedHosts = new Set([`127.0.0.1:${srv.address().port}`, `localhost:${srv.address().port}`]);
   return {
     origin: selfOrigin,
     url: `${selfOrigin}/v/${viewToken}/`,

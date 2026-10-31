@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import http from "node:http";
 import { startViewer } from "../view.mjs";
 import { connectCdp } from "../cdp.mjs";
 import { FakeChrome } from "./fake-cdp.mjs";
@@ -147,4 +148,67 @@ test("the viewer says which tab it shows, and with a sign-in sheet, tells once w
     await new Promise((r) => setTimeout(r, 40));
     assert.equal(signedIn, 1, "only once");
   } finally { v.close(); }
+});
+
+// fetch can't set Host, so these go through node:http. Only the status and JSON error are read;
+// the SSE stream is dropped as soon as its headers arrive.
+function raw(v, { method = "GET", path = "", host, origin, body } = {}) {
+  const u = new URL(v.url + path);
+  return new Promise((resolve, reject) => {
+    const headers = { host };
+    if (origin) headers.origin = origin;
+    if (body !== undefined) headers["content-type"] = "application/json";
+    const req = http.request({ hostname: u.hostname, port: u.port, path: u.pathname, method, headers, agent: false }, (res) => {
+      if (res.headers["content-type"]?.startsWith("text/event-stream")) { res.destroy(); return resolve({ status: res.statusCode }); }
+      const chunks = [];
+      res.on("data", (c) => chunks.push(c));
+      res.on("end", () => { let json = null; try { json = JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch {} resolve({ status: res.statusCode, json }); });
+    });
+    req.on("error", reject);
+    req.end(body === undefined ? undefined : JSON.stringify(body));
+  });
+}
+
+const ROUTES = [
+  { method: "GET", path: "" },
+  { method: "GET", path: "frames" },
+  { method: "GET", path: "origin" },
+  { method: "GET", path: "nope" },
+  { method: "POST", path: "input", body: { type: "text", text: "x" } },
+  { method: "POST", path: "secret", body: { value: SECRET, expect: "https://app.a.test" } },
+];
+
+test("a foreign Host (DNS rebinding) is refused on every route, GETs without Origin included", async () => {
+  const s = await setup({ signin: "https://app.a.test" });
+  const port = new URL(s.v.origin).port;
+  try {
+    for (const r of ROUTES) {
+      for (const origin of [undefined, s.v.origin]) {
+        const res = await raw(s.v, { ...r, host: `evil.example:${port}`, origin });
+        assert.equal(res.status, 403, `${r.method} ${r.path} origin=${origin}`);
+        assert.deepEqual(res.json, { error: "bad_host" });
+      }
+    }
+    for (const host of ["127.0.0.1", "localhost", `127.0.0.1:${Number(port) + 1}`, `localhost.evil.example:${port}`, `[::1]:${port}`]) {
+      assert.equal((await raw(s.v, { path: "origin", host })).status, 403, host);
+    }
+    const tokenless = await new Promise((resolve) => http.get({ hostname: "127.0.0.1", port, path: "/", headers: { host: `evil.example:${port}` }, agent: false }, (res) => { res.resume(); resolve(res.statusCode); }));
+    assert.equal(tokenless, 403);
+    assert.equal(s.chrome.inserted.length, 0);
+  } finally { s.close(); }
+});
+
+test("both loopback hosts on the bound port reach every route", async () => {
+  const s = await setup({ signin: "https://app.a.test" });
+  const port = new URL(s.v.origin).port;
+  try {
+    for (const name of ["127.0.0.1", "localhost", "LOCALHOST"]) {
+      const host = `${name}:${port}`;
+      const origin = `http://${name.toLowerCase()}:${port}`;
+      for (const r of ROUTES) {
+        const res = await raw(s.v, { ...r, host, origin });
+        assert.equal(res.status, r.path === "nope" ? 405 : 200, `${host} ${r.method} ${r.path}`);
+      }
+    }
+  } finally { s.close(); }
 });
