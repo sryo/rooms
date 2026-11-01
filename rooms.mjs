@@ -317,6 +317,7 @@ export function createRooms({
   }
 
 async function startRoom(name, { timeoutMs = 60000, image: override } = {}) {
+    const started = now();
     const img = override ?? image;
     const room = get(name);
     if (!existsSync(room.profile)) fail("profile_missing", `${room.profile} is gone; restore it, or rooms init a new room (it starts signed out)`);
@@ -395,7 +396,7 @@ async function startRoom(name, { timeoutMs = 60000, image: override } = {}) {
         heartbeatFailures.delete(name);
         holdAwake(runtime.helperPid?.(cname));
         writeFileSync(ownerFile(name), JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }) + "\n", { mode: 0o600 });
-        logEvent(name, "up", { browser: v.Browser });
+        logEvent(name, "up", { browser: v.Browser, ms: now() - started });
         return { name, state: "up", browser: v.Browser, port: room.cdp.port };
       }
       if (Date.now() - t0 > timeoutMs) {

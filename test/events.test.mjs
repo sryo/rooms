@@ -27,6 +27,15 @@ test("up and down are logged in order, with a time, in the room's control folder
   assert.equal(statSync(file).mode & 0o777, 0o600);
 });
 
+test("up logs how long it took from the start of up to CDP answering, in ms", async () => {
+  let t = 1000;
+  const rooms = createRooms({ home: tmpHome(), runtime: fakeRuntime(), fetch: fakeFetch(() => t >= 4000), sleep: async (ms) => { t += ms; }, now: () => t, physicalMemory: 64 * 2 ** 30, connect: async () => { throw new Error("no cdp"); } });
+  await rooms.init("work");
+  await rooms.up("work");
+  const up = (await rooms.events("work")).find((e) => e.event === "up");
+  assert.equal(up.ms, 3000);
+});
+
 test("the log is capped: past its size the older half moves aside once, and reading sees both", () => {
   const dir = tmpHome(), file = join(dir, "events.jsonl");
   for (let i = 0; i < 40; i++) appendEvent(file, "tick", { i }, { maxBytes: 400 });
