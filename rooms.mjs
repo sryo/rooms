@@ -193,6 +193,11 @@ export const macAwake = {
 
 // A sticky exclusion (an xattr on the folder): Time Machine would otherwise keep copies of every
 // room's sessions on the backup disk. Best effort; a Mac without Time Machine set up still works.
+// A banner from Script Editor's sender; AppleScript strings are escaped, never interpolated raw.
+const macNotify = (title, body) => {
+  const q = (x) => `"${String(x).replace(/[\\"]/g, "\\$&")}"`;
+  spawnSync("osascript", ["-e", `display notification ${q(body)} with title ${q(title)}`], { stdio: "ignore", timeout: 10000 });
+};
 const timeMachineExclude = (path) => { spawnSync("tmutil", ["addexclusion", path], { stdio: "ignore", timeout: 10000 }); };
 
 export function createRooms({
@@ -212,6 +217,7 @@ export function createRooms({
   cloneFile = apfsClone,
   launchAgents = join(homedir(), "Library", "LaunchAgents"),
   excludeFromBackup = null, // the CLI passes timeMachineExclude
+  notify = null, // the CLI passes macNotify
 } = {}) {
   const file = join(home, "rooms.json");
   const containerName = (name) => `rooms-${name}`;
@@ -225,6 +231,8 @@ export function createRooms({
   // Who started the room and when; removed by down. watcher.json: the watch process keeping it up.
   const ownerFile = (name) => join(controlDir(name), "owner.json");
   const watcherFile = (name) => join(controlDir(name), "watcher.json");
+  // A crashed room the watcher couldn't bring back: {failures, retryAt, error}. down removes it.
+  const restartFile = (name) => join(controlDir(name), "restart.json");
   const readJson = (path) => { try { return JSON.parse(readFileSync(path, "utf8")); } catch { return undefined; } };
 
   function load() {
@@ -425,6 +433,7 @@ async function startRoom(name, { timeoutMs = 60000 } = {}) {
       rmSync(ownerFile(name), { force: true });
       const awakeFile = join(home, "run", `${name}.awake`);
       if (awake && existsSync(awakeFile)) { awake.stop(Number(readFileSync(awakeFile, "utf8"))); rmSync(awakeFile, { force: true }); }
+      rmSync(restartFile(name), { force: true });
       if (state) logEvent(name, "down", {});
       return { name, state: "down" };
     },
@@ -435,7 +444,10 @@ async function startRoom(name, { timeoutMs = 60000 } = {}) {
       if (!runtime.available()) fail("runtime_missing", "Apple's `container` CLI isn't available");
       if (containers().get(containerName(name)) !== "running") {
         heartbeatFailures.delete(name);
-        return { name, state: "down", failures: 0 };
+        const pending = readJson(restartFile(name));
+        if (!pending) return { name, state: "down", failures: 0 };
+        if (now() < Date.parse(pending.retryAt)) return { name, state: "restart_failed", retryAt: pending.retryAt, error: pending.error };
+        return this.restart(name, pending);
       }
       let v;
       try { v = await probe(name); } catch {}
@@ -463,12 +475,27 @@ async function startRoom(name, { timeoutMs = 60000 } = {}) {
       heartbeatFailures.set(name, failures);
       if (failures < after) return { name, state: "unhealthy", failures };
       logEvent(name, "crashed", { failures });
+      await this.down(name);
+      return this.restart(name, null);
+    },
+
+    // Brings a crashed room back. On failure the next try waits twice as long (1 min up to 30), and
+    // the user is told once, then again when it is back.
+    async restart(name, pending) {
+      const room = get(name);
       try {
-        await this.down(name);
         await this.up(name);
+        rmSync(restartFile(name), { force: true });
+        if (pending) notify?.("rooms", `${name} is back up`);
         return { name, state: "restarted", profile: room.profile, failures: 0 };
       } catch (e) {
-        fail("restart_failed", `room '${name}' could not restart (${e.message}); profile kept at ${room.profile}`);
+        const failures = (pending?.failures ?? 0) + 1;
+        const retryAt = new Date(now() + Math.min(30, 2 ** (failures - 1)) * 60000).toISOString();
+        mkdirSync(controlDir(name), { recursive: true, mode: 0o700 });
+        writeFileSync(restartFile(name), JSON.stringify({ failures, retryAt, error: e.message }) + "\n", { mode: 0o600 });
+        logEvent(name, "restart-failed", { failures, error: e.message });
+        if (failures === 1) notify?.("rooms", `${name} could not restart: ${e.message}. Retrying; rooms status ${name} --deep says more`);
+        return { name, state: "restart_failed", retryAt, error: e.message };
       }
     },
 
@@ -483,7 +510,8 @@ async function startRoom(name, { timeoutMs = 60000 } = {}) {
       const runtimeOk = runtime.available();
       add("runtime", "required", runtimeOk ? "pass" : "fail", runtimeOk ? {} : { remedy: "brew install container && container system start" });
       const running = runtimeOk && containers().get(containerName(name)) === "running";
-      add("container", "required", running ? "pass" : "fail", running ? {} : { stopRequested: existsSync(stopFile(name)), remedy: remedies.up(name) });
+      const pending = !running && readJson(restartFile(name));
+      add("container", "required", running ? "pass" : "fail", running ? {} : { stopRequested: existsSync(stopFile(name)), ...(pending && { detail: `restart failing since ${pending.failures} tries (${pending.error}); next try ${pending.retryAt}` }), remedy: remedies.up(name) });
       let browser, cdpError;
       if (running) { try { browser = (await probe(name)).Browser; } catch (e) { cdpError = e.message; } }
       add("cdp", "required", !running ? "skip" : browser ? "pass" : "fail", cdpError ? { detail: cdpError, remedy: `rooms down ${name} && ${remedies.up(name)}` } : {});
@@ -719,7 +747,7 @@ const USAGE = `usage: rooms init <name> | up <name> | down <name>
 Output is JSON when piped or with --json. Older names still work: list, doctor, teleport,
 checkpoint(s), restore, prune, watch, view --signin.`;
 const opt = (argv, f) => { const i = argv.indexOf(f); return i >= 0 ? argv[i + 1] : undefined; };
-export async function main(argv, rooms = createRooms({ awake: macAwake, excludeFromBackup: timeMachineExclude }), out = console.log, {
+export async function main(argv, rooms = createRooms({ awake: macAwake, excludeFromBackup: timeMachineExclude, notify: macNotify }), out = console.log, {
   tty = process.stdout.isTTY,
   sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
   viewer = async (name, opts) => (await import("./view.mjs")).startViewer({ wsUrl: await browserWsUrl(rooms.endpoint(name)), connect: (u) => connectCdp(u), ...opts }),

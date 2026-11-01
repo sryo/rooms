@@ -285,6 +285,41 @@ test("a version probe that fails doesn't block up, and the cache keeps every bui
   assert.equal(checks, 3, "a missing image is left for container run to report");
 });
 
+test("a room whose restart fails keeps being retried, with backoff, and tells the user once", async () => {
+  let healthy = true, t = Date.parse("2026-11-01T00:00:00Z"), runFails = false;
+  const notes = [];
+  const runtime = fakeRuntime(), exec = runtime.exec.bind(runtime);
+  runtime.exec = (argv) => { if (argv[0] !== "run" || !runFails) return exec(argv); runtime.calls.push(argv); return { code: 1, stdout: "", stderr: "no space" }; };
+  const rooms = createRooms({ home: tmpHome(), runtime, fetch: fakeFetch(() => healthy), sleep: async () => {}, physicalMemory: 64 * 2 ** 30, now: () => t, notify: (title, body) => notes.push(`${title}: ${body}`) });
+  await rooms.init("work");
+  await rooms.up("work");
+  healthy = false; runFails = true;
+  const first = await rooms.heartbeat("work", { after: 1 });
+  assert.equal(first.state, "restart_failed");
+  assert.equal(first.retryAt, new Date(t + 60000).toISOString());
+  assert.equal(notes.length, 1);
+  assert.match(notes[0], /work.*no space/);
+  assert.equal((await rooms.heartbeat("work")).state, "restart_failed", "before retryAt nothing is tried");
+  assert.equal(runtime.calls.filter((c) => c[0] === "run").length, 2);
+  t += 60000;
+  const second = await rooms.heartbeat("work");
+  assert.equal(runtime.calls.filter((c) => c[0] === "run").length, 3);
+  assert.equal(second.retryAt, new Date(t + 120000).toISOString(), "the wait doubles");
+  assert.equal(notes.length, 1, "told once, not every retry");
+  const d = await rooms.doctor("work");
+  assert.match(d.checks.find((c) => c.id === "container").detail, /restart failing.*no space/);
+  t += 120000; runFails = false; healthy = true;
+  assert.equal((await rooms.heartbeat("work")).state, "restarted");
+  assert.equal(notes.length, 2);
+  assert.match(notes[1], /work.*back up/);
+  assert.equal((await rooms.heartbeat("work")).state, "up");
+  healthy = false; runFails = true;
+  await rooms.heartbeat("work", { after: 1 });
+  await rooms.down("work");
+  t += 3600000;
+  assert.equal((await rooms.heartbeat("work")).state, "down", "a deliberate down ends the retries");
+});
+
 test("checkpoint clones a stopped profile, restore keeps its replaced profile, and prune removes only the checkpoint", async () => {
   const home = tmpHome(), runtime = fakeRuntime(), cloned = [];
   const rooms = createRooms({ home, runtime, fetch: fakeFetch(), sleep: async () => {}, cloneFile: (from, to) => { cloned.push(from); copyFileSync(from, to); } });
