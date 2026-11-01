@@ -35,6 +35,19 @@ test("an agent mid-call holds its tab; one between calls (inactive past five sec
   assert.equal(leaseHolder(home, "room:w:C"), null);
 });
 
+test("a lease whose pid now belongs to a process started after its last call holds nothing", () => {
+  const home = tmpHome();
+  mkdirSync(join(home, "run", "leases"), { recursive: true });
+  const started = Date.now() - 60000;
+  const put = (tabId, last) => writeFileSync(file(home, tabId), JSON.stringify({ owner: "x", pid: process.pid, last, active: true, stuck: null }));
+  put("room:w:old", started - 3600000);
+  put("room:w:now", Date.now());
+  assert.equal(leaseHolder(home, "room:w:old", () => started), null, "the pid was reused");
+  assert.deepEqual(leaseHolder(home, "room:w:now", () => started), { owner: "x", pid: process.pid });
+  assert.deepEqual(leaseHolder(home, "room:w:old", () => null), { owner: "x", pid: process.pid }, "start time unknown: as before");
+  assert.equal(leaseHolder(home, "room:w:old"), null, "this test process started after that lease's last call");
+});
+
 test("releasing never removes a lease someone else took over meanwhile", async () => {
   const home = tmpHome();
   const release = await holdForUser(home, "room:work:T1");
