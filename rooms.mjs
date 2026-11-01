@@ -15,6 +15,7 @@ import { connectCdp, browserWsUrl } from "./cdp.mjs";
 import { cloneFile as apfsClone, checkpointProfile, restoreProfile } from "./checkpoints.mjs";
 import { appendEvent, readEvents } from "./events.mjs";
 import { holdForUser, leaseHolder } from "./leases.mjs";
+import { acquireFileLock, acquireFileLockSync } from "./locks.mjs";
 
 export class RoomsError extends Error {
   constructor(code, message) { super(`${code}: ${message}`); this.code = code; }
@@ -234,6 +235,7 @@ export function createRooms({
   const file = join(home, "rooms.json");
   const containerName = (name) => `rooms-${name}`;
   const heartbeatFailures = new Map();
+  const watcherLocks = new Map();
   const agentFile = (name) => join(launchAgents, `ai.perch.rooms.${name}.plist`);
 
   const controlDir = (name) => join(home, "control", name);
@@ -263,27 +265,23 @@ export function createRooms({
     for (const f of ["image/Dockerfile", "image/entrypoint.sh", "image/policies.json", "relay.mjs"]) { try { h.update(f).update(readFileSync(join(buildContext, f))); } catch {} }
     return h.digest("hex").slice(0, 16);
   };
-  // A lock folder holding its maker's pid; one left by a dead process is taken over.
-  function takeLock(lock) {
-    mkdirSync(dirname(lock), { recursive: true, mode: 0o700 });
-    try { mkdirSync(lock, { mode: 0o700 }); }
-    catch (e) {
-      if (e.code !== "EEXIST") throw e;
-      let holder = NaN;
-      try { holder = Number(readFileSync(join(lock, "pid"), "utf8")); } catch {}
-      if (alive(holder)) return holder;
-    }
-    writeFileSync(join(lock, "pid"), String(process.pid), { mode: 0o600 });
-    return null;
-  }
   const readJson = (path) => { try { return JSON.parse(readFileSync(path, "utf8")); } catch { return undefined; } };
 
-  function load() {
+  function loadRaw() {
     if (!existsSync(file)) return { version: VERSION, rooms: {} };
     let reg;
     try { reg = JSON.parse(readFileSync(file, "utf8")); } catch { fail("registry_corrupt", `${file} is not valid JSON; fix or move it, nothing was changed`); }
     if (reg.version !== VERSION) fail("registry_version", `${file} has version ${reg.version}, this rooms knows ${VERSION}`);
     return reg;
+  }
+  function load() {
+    if (existsSync(join(home, "run", "token-pending.json"))) {
+      const lock = acquireFileLockSync(join(home, "run", "registry.lock.sqlite"), { waitMs: 10000 });
+      if (!lock) fail("registry_busy", "another rooms process is changing the registry; retry");
+      try { recoverTokenRotation(); }
+      finally { lock.release(); }
+    }
+    return loadRaw();
   }
   function save(reg) {
     mkdirSync(home, { recursive: true, mode: 0o700 });
@@ -291,6 +289,31 @@ export function createRooms({
     writeFileSync(tmp, JSON.stringify(reg, null, 2) + "\n", { mode: 0o600 });
     renameSync(tmp, file);
     chmodSync(file, 0o600);
+  }
+  // A rotation is two file swaps. A journal makes either interrupted swap finish on the next
+  // registry transaction, so rooms.json and the relay's mounted token do not stay divergent.
+  const pendingTokenFile = join(home, "run", "token-pending.json");
+  function recoverTokenRotation() {
+    if (!existsSync(pendingTokenFile)) return;
+    let pending;
+    try { pending = JSON.parse(readFileSync(pendingTokenFile, "utf8")); }
+    catch { fail("rotation_pending_corrupt", `${pendingTokenFile} is not valid JSON; nothing was changed`); }
+    if (!NAME.test(pending?.name ?? "") || !/^[0-9a-f]{48}$/.test(pending?.token ?? "")) fail("rotation_pending_corrupt", `${pendingTokenFile} has an invalid rotation; nothing was changed`);
+    const reg = loadRaw();
+    const room = reg.rooms[pending.name] ?? fail("rotation_pending_corrupt", `${pendingTokenFile} names a missing room; nothing was changed`);
+    if (room.cdp.token !== pending.token) { room.cdp.token = pending.token; save(reg); }
+    const control = controlDir(pending.name);
+    mkdirSync(control, { recursive: true, mode: 0o700 });
+    const tmp = join(control, `token.${process.pid}.tmp`);
+    writeFileSync(tmp, pending.token + "\n", { mode: 0o600 });
+    renameSync(tmp, join(control, "token"));
+    rmSync(pendingTokenFile);
+  }
+  async function withRegistryLock(fn) {
+    const lock = await acquireFileLock(join(home, "run", "registry.lock.sqlite"), { waitMs: 10000 });
+    if (!lock) fail("registry_busy", "another rooms process is changing the registry; retry");
+    try { recoverTokenRotation(); return await fn(); }
+    finally { lock.release(); }
   }
   function get(name) {
     const r = load().rooms[name];
@@ -415,30 +438,31 @@ async function startRoom(name, { timeoutMs = 60000, image: override } = {}) {
     // Options other than the name are ignored on purpose: the profile path is not configurable.
     async init(name) {
       if (typeof name !== "string" || !NAME.test(name)) fail("bad_name", `'${name}': lowercase letters, digits and dashes, starting with a letter`);
-      const reg = load();
-      if (reg.rooms[name]) fail("room_exists", `room '${name}' already exists`);
-      const room = {
-        name,
-        runtime: "apple-container",
-        profile: join(home, "profiles", name),
-        cdp: { host: "127.0.0.1", port: freePort(reg), token: randomBytes(24).toString("hex") },
-        createdAt: new Date().toISOString(),
-      };
-      mkdirSync(room.profile, { recursive: true, mode: 0o700 });
-      reg.rooms[name] = room;
-      save(reg);
-      excludeFromBackup?.(home);
-      return room;
+      return withRegistryLock(() => {
+        const reg = load();
+        if (reg.rooms[name]) fail("room_exists", `room '${name}' already exists`);
+        const room = {
+          name,
+          runtime: "apple-container",
+          profile: join(home, "profiles", name),
+          cdp: { host: "127.0.0.1", port: freePort(reg), token: randomBytes(24).toString("hex") },
+          createdAt: new Date().toISOString(),
+        };
+        mkdirSync(room.profile, { recursive: true, mode: 0o700 });
+        reg.rooms[name] = room;
+        save(reg);
+        excludeFromBackup?.(home);
+        return room;
+      });
     },
 
-    // One up at a time per room: the lock is a folder (made atomically) holding the pid that made
-    // it, so a lock left by a process that died is taken over.
+    // One up at a time per room. A dead process releases the SQLite lock itself.
     async up(name, opts) {
       get(name);
-      const lock = join(controlDir(name), "up.lock"), holder = takeLock(lock);
-      if (holder) fail("room_busy", `another rooms up (pid ${holder}) is starting ${name}; wait for it`);
+      const lock = await acquireFileLock(join(controlDir(name), "up.lock.sqlite"));
+      if (!lock) fail("room_busy", `another rooms up is starting ${name}; wait for it`);
       try { return await startRoom(name, opts); }
-      finally { rmSync(lock, { recursive: true, force: true }); }
+      finally { lock.release(); }
     },
 
     async down(name) {
@@ -561,8 +585,8 @@ async function startRoom(name, { timeoutMs = 60000, image: override } = {}) {
     async update({ force = false } = {}) {
       const st = readJson(updateState) ?? {};
       if (!force && st.checkedAt && now() - Date.parse(st.checkedAt) < DAY) return { state: "not_due", checkedAt: st.checkedAt };
-      const lock = join(home, "run", "update.lock"), holder = takeLock(lock);
-      if (holder) return { state: "busy", pid: holder };
+      const lock = await acquireFileLock(join(home, "run", "update.lock.sqlite"));
+      if (!lock) return { state: "busy" };
       const record = (x) => writeFileSync(updateState, JSON.stringify({ ...st, checkedAt: new Date(now()).toISOString(), ...x }) + "\n", { mode: 0o600 });
       try {
         const candidate = imageTag("candidate");
@@ -585,7 +609,7 @@ async function startRoom(name, { timeoutMs = 60000, image: override } = {}) {
         runtime.removeImage(candidate);
         record({ failing: null });
         return { state: "current", version: from };
-      } finally { rmSync(lock, { recursive: true, force: true }); }
+      } finally { lock.release(); }
     },
 
     // Brings a crashed room back. On failure the next try waits twice as long (1 min up to 30), and
@@ -654,25 +678,32 @@ async function startRoom(name, { timeoutMs = 60000, image: override } = {}) {
     // closes connections made with the old one; clients reconnect with the new one from rooms.json.
     // The browser isn't restarted, so no site signs out.
     async rotate(name) {
-      get(name);
-      const reg = load();
-      reg.rooms[name].cdp.token = randomBytes(24).toString("hex");
-      save(reg);
-      mkdirSync(controlDir(name), { recursive: true, mode: 0o700 });
-      const tmp = join(controlDir(name), `token.${process.pid}.tmp`);
-      writeFileSync(tmp, reg.rooms[name].cdp.token + "\n", { mode: 0o600 });
-      renameSync(tmp, join(controlDir(name), "token"));
-      logEvent(name, "token-rotated", {});
-      return { name, rotated: true };
+      return withRegistryLock(() => {
+        const reg = load();
+        reg.rooms[name] ?? fail("room_unknown", `no room '${name}'`);
+        const next = randomBytes(24).toString("hex");
+        const tmp = `${pendingTokenFile}.${process.pid}.tmp`;
+        writeFileSync(tmp, JSON.stringify({ name, token: next }) + "\n", { mode: 0o600 });
+        renameSync(tmp, pendingTokenFile);
+        recoverTokenRotation();
+        logEvent(name, "token-rotated", {});
+        return { name, rotated: true };
+      });
     },
 
-    // The watch process keeping the room up. A second one steps aside while the first lives.
+    // The watch process keeps its lock for its lifetime. A crash releases it automatically.
     async claimWatch(name, pid = process.pid) {
       get(name);
+      const own = watcherLocks.get(name);
+      if (own) return { claimed: own.pid === pid, pid: own.pid };
+      const lock = await acquireFileLock(join(controlDir(name), "watch.lock.sqlite"));
       const held = readJson(watcherFile(name))?.pid;
-      if (held !== pid && alive(held)) return { claimed: false, pid: held };
-      mkdirSync(controlDir(name), { recursive: true, mode: 0o700 });
-      writeFileSync(watcherFile(name), JSON.stringify({ pid, since: new Date().toISOString() }) + "\n", { mode: 0o600 });
+      if (!lock) return { claimed: false, pid: held };
+      try {
+        mkdirSync(controlDir(name), { recursive: true, mode: 0o700 });
+        writeFileSync(watcherFile(name), JSON.stringify({ pid, since: new Date().toISOString() }) + "\n", { mode: 0o600 });
+      } catch (e) { lock.release(); throw e; }
+      watcherLocks.set(name, { pid, lock });
       return { claimed: true, pid };
     },
 
@@ -703,26 +734,30 @@ async function startRoom(name, { timeoutMs = 60000, image: override } = {}) {
       try { origin = new URL(url).origin; } catch { fail("bad_url", `'${url}' is not a URL`); }
       if (!origin.startsWith("https://")) fail("bad_url", `'${url}': sites must be https`);
       try { new RegExp(signedOut); } catch { fail("bad_pattern", `'${signedOut}' is not a regular expression`); }
-      const reg = load();
-      const room = reg.rooms[name] ?? fail("room_unknown", `no room '${name}'`);
-      room.sites ??= [];
-      const existing = room.sites.find((s) => s.origin === origin);
-      if (existing) Object.assign(existing, { url, signedOut });
-      else room.sites.push({ origin, url, signedOut });
-      save(reg);
-      return room.sites;
+      return withRegistryLock(() => {
+        const reg = load();
+        const room = reg.rooms[name] ?? fail("room_unknown", `no room '${name}'`);
+        room.sites ??= [];
+        const existing = room.sites.find((s) => s.origin === origin);
+        if (existing) Object.assign(existing, { url, signedOut });
+        else room.sites.push({ origin, url, signedOut });
+        save(reg);
+        return room.sites;
+      });
     },
     async sites(name) { return get(name).sites ?? []; },
 
     async flagsSet(name, flags) {
       chromeFlags(flags);
       if (containers().get(containerName(name)) === "running") fail("room_up", `room '${name}' is up; rooms down ${name} before changing flags`);
-      const reg = load();
-      const room = reg.rooms[name] ?? fail("room_unknown", `no room '${name}'`);
-      room.flags = flags;
-      delete room.device; // custom flags replace a device preset
-      save(reg);
-      return flags;
+      return withRegistryLock(() => {
+        const reg = load();
+        const room = reg.rooms[name] ?? fail("room_unknown", `no room '${name}'`);
+        room.flags = flags;
+        delete room.device; // custom flags replace a device preset
+        save(reg);
+        return flags;
+      });
     },
     async flags(name) { return get(name).flags ?? []; },
 
@@ -739,11 +774,14 @@ async function startRoom(name, { timeoutMs = 60000, image: override } = {}) {
       }
       get(name);
       if (containers().get(containerName(name)) === "running") fail("room_up", `room '${name}' is up; rooms down ${name} before changing its settings`);
-      const reg = load();
-      Object.assign(reg.rooms[name], settings);
-      if (settings.device) reg.rooms[name].flags = DEVICES[settings.device];
-      save(reg);
-      return { name, ...Object.fromEntries(Object.keys(known).filter((k) => reg.rooms[name][k] !== undefined).map((k) => [k, reg.rooms[name][k]])) };
+      return withRegistryLock(() => {
+        const reg = load();
+        const room = reg.rooms[name] ?? fail("room_unknown", `no room '${name}'`);
+        Object.assign(room, settings);
+        if (settings.device) room.flags = DEVICES[settings.device];
+        save(reg);
+        return { name, ...Object.fromEntries(Object.keys(known).filter((k) => room[k] !== undefined).map((k) => [k, room[k]])) };
+      });
     },
 
     async checkpoint(name, id = `cp-${Date.now().toString(36)}`) {

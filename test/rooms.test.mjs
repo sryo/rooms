@@ -4,6 +4,7 @@ import { existsSync, statSync, readFileSync, mkdirSync, rmSync, writeFileSync, c
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { createRooms, RoomsError } from "../rooms.mjs";
+import { acquireFileLock } from "../locks.mjs";
 import { tmpHome, fakeRuntime, fakeFetch } from "./helpers.mjs";
 
 const make = (opts = {}) => {
@@ -562,16 +563,17 @@ test("doctor warns when the room runs an older build than the image, or the imag
   assert.match(i.detail, /apt failed/);
 });
 
-test("up holds a lock while it starts the room: a second up meanwhile is refused, one left by a dead process is taken over", async () => {
+test("up refuses a concurrent start and releases its lock after starting", async () => {
   const { home, rooms } = make();
   await rooms.init("work");
-  const lock = join(home, "control", "work", "up.lock");
-  mkdirSync(lock, { recursive: true });
-  writeFileSync(join(lock, "pid"), String(process.pid));
-  assert.equal(await code(() => rooms.up("work")), "room_busy");
-  writeFileSync(join(lock, "pid"), "999999");
+  const path = join(home, "control", "work", "up.lock.sqlite");
+  const lock = await acquireFileLock(path);
+  try { assert.equal(await code(() => rooms.up("work")), "room_busy"); }
+  finally { lock.release(); }
   await rooms.up("work");
-  assert.equal(existsSync(lock), false);
+  const after = await acquireFileLock(path);
+  assert.ok(after);
+  after.release();
 });
 
 test("status says who started the room and when; a second watcher steps aside for a live one", async () => {
@@ -586,6 +588,18 @@ test("status says who started the room and when; a second watcher steps aside fo
   assert.equal((await rooms.status("work")).watcher, process.pid);
   await rooms.down("work");
   assert.equal((await rooms.status("work")).owner, undefined);
+});
+
+test("a watcher claim follows the lock, not a reused pid in watcher.json", async () => {
+  const { home, rooms } = make();
+  await rooms.init("work");
+  const path = join(home, "control", "work", "watcher.json");
+  mkdirSync(join(home, "control", "work"), { recursive: true });
+  writeFileSync(path, JSON.stringify({ pid: process.pid, since: "old" }));
+  assert.deepEqual(await rooms.claimWatch("work", 4242), { claimed: true, pid: 4242 });
+  assert.equal(JSON.parse(readFileSync(path, "utf8")).pid, 4242);
+  const other = make({ home }).rooms;
+  assert.deepEqual(await other.claimWatch("work", 5000), { claimed: false, pid: 4242 });
 });
 
 test("up hands the token to the room in its read-only control folder and leaves no env file behind", async () => {

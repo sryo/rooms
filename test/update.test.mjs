@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createRooms, main } from "../rooms.mjs";
+import { acquireFileLock } from "../locks.mjs";
 import { tmpHome, fakeRuntime, fakeFetch } from "./helpers.mjs";
 
 // The fake runtime plus images: tag -> {digest, version}; each container remembers its image's digest.
@@ -85,9 +86,9 @@ test("a failed build leaves latest alone, stops the builder, and tells the user 
 
 test("a second update while one runs steps aside", async () => {
   const { home, rooms } = setup();
-  mkdirSync(join(home, "run", "update.lock"), { recursive: true });
-  writeFileSync(join(home, "run", "update.lock", "pid"), String(process.pid));
-  assert.equal((await rooms.update()).state, "busy");
+  const lock = await acquireFileLock(join(home, "run", "update.lock.sqlite"));
+  try { assert.equal((await rooms.update()).state, "busy"); }
+  finally { lock.release(); }
 });
 
 test("a room moves to a new build only once nothing has used it for an hour, and keeps a checkpoint", async () => {
