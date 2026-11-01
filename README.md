@@ -7,7 +7,7 @@ rooms gives your AI agents their own browsers to work in, so they stop borrowing
 ```bash
 brew install container && container system start
 git clone https://github.com/sryo/rooms && cd rooms
-container build --no-cache -t rooms-chrome:latest -f image/Dockerfile . && container builder stop
+container build --no-cache -t rooms-chrome:latest -f image/Dockerfile .; container builder stop
 npm link
 ```
 

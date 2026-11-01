@@ -278,7 +278,11 @@ async function startRoom(name, { timeoutMs = 60000 } = {}) {
     const lastVersion = join(room.profile, "Last Version");
     if (existsSync(lastVersion) && runtime.imageVersion) {
       const profileVersion = readFileSync(lastVersion, "utf8").trim();
-      const browserVersion = runtime.imageVersion(image);
+      // Asking the image starts a container (about 0.8 s), so the answer is kept per image build.
+      const digest = runtime.imageInfo?.(image)?.digest, known = join(home, "run", "image-versions.json");
+      const versions = (digest && readJson(known)) || {};
+      const browserVersion = versions[digest] ?? runtime.imageVersion(image);
+      if (digest && !versions[digest]) { mkdirSync(join(home, "run"), { recursive: true, mode: 0o700 }); writeFileSync(known, JSON.stringify({ [digest]: browserVersion }) + "\n", { mode: 0o600 }); }
       if (newer(profileVersion, browserVersion)) fail("profile_newer", `profile ${name} was used by Chromium ${profileVersion}; image ${image} has ${browserVersion}`);
     }
     if (state) runtime.exec(["delete", cname]); // a stopped leftover; the profile is on the host, so nothing is lost

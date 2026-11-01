@@ -212,6 +212,24 @@ test("up refuses an image older than the profile before starting Chromium", asyn
   await rooms.up("work");
 });
 
+test("up checks the image's Chromium version once per image build", async () => {
+  const runtime = fakeRuntime();
+  let digest = "sha256:a", version = "156.0.8078.73", checks = 0;
+  runtime.imageInfo = () => ({ digest, built: "2026-10-31T00:00:00Z" });
+  runtime.imageVersion = () => { checks++; return version; };
+  const { rooms } = make({ runtime });
+  const r = await rooms.init("work");
+  writeFileSync(join(r.profile, "Last Version"), "156.0.8078.73\n");
+  await rooms.up("work"); await rooms.down("work");
+  await rooms.up("work"); await rooms.down("work");
+  assert.equal(checks, 1, "the same build is not asked again");
+  digest = "sha256:b"; version = "155.0.0.0";
+  assert.equal(await code(() => rooms.up("work")), "profile_newer", "a new build is asked, and an older Chromium still refused");
+  assert.equal(checks, 2);
+  assert.equal(await code(() => rooms.up("work")), "profile_newer", "a cached older version is refused too");
+  assert.equal(checks, 2);
+});
+
 test("checkpoint clones a stopped profile, restore keeps its replaced profile, and prune removes only the checkpoint", async () => {
   const home = tmpHome(), runtime = fakeRuntime(), cloned = [];
   const rooms = createRooms({ home, runtime, fetch: fakeFetch(), sleep: async () => {}, cloneFile: (from, to) => { cloned.push(from); copyFileSync(from, to); } });
