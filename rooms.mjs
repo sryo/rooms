@@ -5,7 +5,7 @@
 // The profile path is fixed per room and is created only by `init`; nothing here ever makes a
 // fresh profile behind the user's back (a fresh profile is a signed-out one).
 
-import { randomBytes } from "node:crypto";
+import { randomBytes, createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync, renameSync, chmodSync, rmSync, readdirSync, openSync, readSync, fstatSync, closeSync, constants as fsc } from "node:fs";
 import { homedir, totalmem } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
@@ -257,6 +257,12 @@ export function createRooms({
     if (digest && version(v)) { mkdirSync(join(home, "run"), { recursive: true, mode: 0o700 }); writeFileSync(known, JSON.stringify({ ...versions, [digest]: v }) + "\n", { mode: 0o600 }); }
     return v;
   }
+  // What the image is made from, so a change to rooms' own image files is built in too.
+  const recipe = () => {
+    const h = createHash("sha256");
+    for (const f of ["image/Dockerfile", "image/entrypoint.sh", "image/policies.json", "relay.mjs"]) { try { h.update(f).update(readFileSync(join(buildContext, f))); } catch {} }
+    return h.digest("hex").slice(0, 16);
+  };
   // A lock folder holding its maker's pid; one left by a dead process is taken over.
   function takeLock(lock) {
     mkdirSync(dirname(lock), { recursive: true, mode: 0o700 });
@@ -549,7 +555,8 @@ async function startRoom(name, { timeoutMs = 60000, image: override } = {}) {
     },
 
     // Builds the image again at most once a day, and makes the build the image only if its Chromium
-    // is newer; the build it replaces is kept as :previous. Rooms then move over on their own.
+    // is newer or rooms' image files changed (never for an older Chromium); the build it replaces is
+    // kept as :previous. Rooms then move over on their own.
     async update({ force = false } = {}) {
       const st = readJson(updateState) ?? {};
       if (!force && st.checkedAt && now() - Date.parse(st.checkedAt) < DAY) return { state: "not_due", checkedAt: st.checkedAt };
@@ -566,12 +573,12 @@ async function startRoom(name, { timeoutMs = 60000, image: override } = {}) {
           record({ failing: error });
           return { state: "build_failed", error };
         }
-        const to = chromiumOf(candidate), from = runtime.imageInfo?.(image) ? chromiumOf(image) : null;
-        if (version(to) && (!version(from) || newer(version(to), version(from)))) {
+        const to = chromiumOf(candidate), from = runtime.imageInfo?.(image) ? chromiumOf(image) : null, made = recipe();
+        if (version(to) && (!version(from) || newer(version(to), version(from)) || (st.recipe !== made && !newer(version(from), version(to))))) {
           if (from) runtime.tag(image, imageTag("previous"));
           runtime.tag(candidate, image);
           runtime.removeImage(candidate);
-          record({ failing: null, promotedAt: new Date(now()).toISOString(), version: to });
+          record({ failing: null, promotedAt: new Date(now()).toISOString(), version: to, recipe: made });
           return { state: "promoted", from, to };
         }
         runtime.removeImage(candidate);

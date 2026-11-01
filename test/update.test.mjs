@@ -26,46 +26,59 @@ function imageRuntime(version = "156.0.8078.73") {
   return rt;
 }
 
+const DAY_MS = 24 * 3600000;
+// A build context holding the files the image is made from.
+const context = () => {
+  const dir = tmpHome();
+  mkdirSync(join(dir, "image"));
+  for (const f of ["image/Dockerfile", "image/entrypoint.sh", "image/policies.json", "relay.mjs"]) writeFileSync(join(dir, f), f);
+  return dir;
+};
 const setup = ({ idle = 0 } = {}) => {
-  const home = tmpHome(), runtime = imageRuntime(), notes = [];
+  const home = tmpHome(), runtime = imageRuntime(), notes = [], ctx = context();
   let t = Date.parse("2026-11-01T00:00:00Z");
   const base = fakeFetch();
   const fetch = async (url, o) => (url.endsWith("/rooms/activity") ? { ok: true, json: async () => ({ idleMs: idle }) } : url.endsWith("/json/list") ? { ok: true, json: async () => [{ id: "T1", type: "page" }] } : base(url, o));
-  const rooms = createRooms({ home, runtime, fetch, sleep: async () => {}, physicalMemory: 64 * 2 ** 30, now: () => t, notify: (a, b) => notes.push(b), cloneFile: (a, b) => writeFileSync(b, "") });
-  return { home, runtime, rooms, notes, advance: (ms) => { t += ms; }, setIdle: (ms) => { idle = ms; } };
+  const rooms = createRooms({ home, runtime, fetch, sleep: async () => {}, physicalMemory: 64 * 2 ** 30, now: () => t, notify: (a, b) => notes.push(b), cloneFile: (a, b) => writeFileSync(b, ""), buildContext: ctx });
+  return { home, runtime, rooms, notes, ctx, advance: (ms) => { t += ms; }, setIdle: (ms) => { idle = ms; } };
 };
 
-test("update builds at most once a day and promotes a build only when its Chromium changed", async () => {
-  const { runtime, rooms, advance } = setup();
-  assert.equal((await rooms.update()).state, "current", "same Chromium: latest is left alone");
-  assert.equal(runtime.images.get("rooms-chrome:latest").digest, "sha256:v1");
-  assert.equal(runtime.images.has("rooms-chrome:candidate"), false);
+test("update builds at most once a day and promotes a build when its Chromium or the image's files changed", async () => {
+  const { runtime, rooms, advance, ctx } = setup();
+  assert.equal((await rooms.update()).state, "promoted", "latest wasn't built from these files yet");
   assert.equal((await rooms.update()).state, "not_due");
-  assert.equal(runtime.builds(), 1);
-  advance(24 * 3600000);
+  advance(DAY_MS);
+  assert.equal((await rooms.update()).state, "current", "same Chromium, same files: latest is left alone");
+  assert.equal(runtime.images.has("rooms-chrome:candidate"), false);
+  advance(DAY_MS);
   runtime.next.version = "156.0.8078.80";
   const u = await rooms.update();
   assert.deepEqual([u.state, u.from, u.to], ["promoted", "156.0.8078.73", "156.0.8078.80"]);
-  assert.equal(runtime.images.get("rooms-chrome:previous").digest, "sha256:v1");
-  assert.equal(runtime.images.get("rooms-chrome:latest").version, "156.0.8078.80");
-  assert.equal(runtime.stops, 2, "the builder VM is stopped after every build");
+  const before = runtime.images.get("rooms-chrome:latest");
+  assert.equal(runtime.images.get("rooms-chrome:previous").version, "156.0.8078.73");
+  advance(DAY_MS);
+  writeFileSync(join(ctx, "image", "entrypoint.sh"), "changed\n");
+  assert.equal((await rooms.update()).state, "promoted", "the image's own files changed");
+  assert.notEqual(runtime.images.get("rooms-chrome:latest").digest, before.digest);
+  assert.equal(runtime.builds(), 4);
+  assert.equal(runtime.stops, 4, "the builder VM is stopped after every build");
 });
 
 test("a failed build leaves latest alone, stops the builder, and tells the user once", async () => {
   const { runtime, rooms, notes, advance } = setup();
   runtime.next.fails = true;
   assert.equal((await rooms.update()).state, "build_failed");
-  advance(24 * 3600000);
+  advance(DAY_MS);
   await rooms.update();
   assert.equal(runtime.images.get("rooms-chrome:latest").digest, "sha256:v1");
   assert.equal(runtime.stops, 2);
   assert.equal(notes.length, 1);
   assert.match(notes[0], /apt failed/);
   runtime.next.fails = false;
-  advance(24 * 3600000);
+  advance(DAY_MS);
   await rooms.update();
   runtime.next.fails = true;
-  advance(24 * 3600000);
+  advance(DAY_MS);
   await rooms.update();
   assert.equal(notes.length, 2, "told again after it had recovered");
 });
