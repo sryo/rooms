@@ -3,6 +3,7 @@
 // rooms writes the "user" lease a viewer holds and reads leases to know a room is in use.
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -46,6 +47,20 @@ test("a lease whose pid now belongs to a process started after its last call hol
   assert.deepEqual(leaseHolder(home, "room:w:now", () => started), { owner: "x", pid: process.pid });
   assert.deepEqual(leaseHolder(home, "room:w:old", () => null), { owner: "x", pid: process.pid }, "start time unknown: as before");
   assert.equal(leaseHolder(home, "room:w:old"), null, "this test process started after that lease's last call");
+});
+
+// perch runs the same table through its roomLeaseLive (perch/test/room.test.mjs), so the two rules can't drift.
+test("every case in fixtures/leases.json holds its tab or not as it says", () => {
+  const home = tmpHome();
+  mkdirSync(join(home, "run", "leases"), { recursive: true });
+  const { cases } = JSON.parse(readFileSync(new URL("fixtures/leases.json", import.meta.url), "utf8"));
+  const now = Date.now(), dead = spawnSync(process.execPath, ["-e", ""]).pid;
+  for (const [i, c] of cases.entries()) {
+    const s = { ...c.lease, pid: { alive: process.pid, dead }[c.lease.pid] ?? c.lease.pid };
+    if ("last" in s) s.last += now;
+    writeFileSync(file(home, `room:w:${i}`), JSON.stringify(s));
+    assert.equal(leaseHolder(home, `room:w:${i}`, () => c.start == null ? null : now + c.start) !== null, c.held, c.name);
+  }
 });
 
 test("releasing never removes a lease someone else took over meanwhile", async () => {
