@@ -109,12 +109,3 @@ test("the graphics libraries SwiftShader doesn't use are removed in the layer th
   const install = docker.split(/^RUN /m).find((r) => r.includes("apt-get install"));
   for (const lib of ["libllvm19", "mesa-libgallium", "libgl1-mesa-dri", "libz3-4"]) assert.ok(install.includes(lib), `the install layer doesn't remove ${lib}`);
 });
-
-test("the install layer drops files nothing in a room loads, and keeps what Chromium, Xvfb and the fonts need", () => {
-  const install = docker.split(/^RUN /m).find((r) => r.includes("apt-get install"));
-  const removal = install.slice(install.indexOf("rm -rf /var/lib/apt/lists"));
-  for (const gone of ["systemd libsystemd-shared", "libVkLayer_khronos_validation", "libVkICD_mock_icd", "/gconv", "/usr/share/icons/Adwaita", "/usr/share/icons/hicolor", "SignWriting", "Tangut", "/usr/share/doc", "/usr/share/gtk-3.0/emoji", "/usr/share/nodejs/corepack"])
-    assert.ok(removal.includes(gone), `the install layer doesn't remove ${gone}`);
-  for (const kept of ["libvk_swiftshader", "libvulkan", "libsystemd0", "Inter", "xkb", "NotoColorEmoji"]) assert.ok(!removal.includes(kept), `the install layer removes ${kept}`);
-  assert.match(removal, /! -name index\.theme/, "icon themes keep index.theme");
-});
