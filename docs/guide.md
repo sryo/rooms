@@ -26,7 +26,7 @@ Set a room up while it's down, and before signing in, since a new user agent can
 - `rooms status work --deep` runs a room's checks and says how to fix each one that fails, including when the room needs a rebuilt image after you update rooms.
 - `rooms logs work` shows what happened to a room: up, down, crashes, idle stops, checks, imports and sign-in handoffs. `--follow --until handoff.ended` waits for the next one, which is how an agent waits for you to finish signing in.
 - `rooms rotate work` gives a room a new token without restarting it, so nothing signs out.
-- `rooms autostart work on` starts a room at every login, and restarts it when its browser stops answering. A room that stops, or that you `rooms down`, stays down. `off` undoes it.
+- `rooms autostart work on` starts a room at every login, and restarts it when its browser stops answering. A room that stops, or that you `rooms down`, stays down. `off` undoes it. It also keeps the room patched: once a day it builds the image again, and when Chromium is newer the room moves to it the next time nothing has used it for an hour, behind a snapshot it goes back to if a site signs out. `rooms update` builds now.
 - `rooms snapshot save work <name>` snapshots a stopped room's profile. `rooms snapshot restore work <name>` brings it back after damage and keeps the profile it replaces; `snapshot list` shows both, and `snapshot delete` removes one.
 - Output is for people in a terminal, and JSON when piped or with `--json`.
 - Older names (`list`, `doctor`, `teleport`, `checkpoint`, `restore`, `prune`, `view --signin`) still work.
