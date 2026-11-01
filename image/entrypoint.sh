@@ -42,11 +42,13 @@ while [ "$stopping" = 0 ]; do
     --disable-component-extensions-with-background-pages \
     --disk-cache-size=67108864 \
     --disk-cache-dir=/tmp/rooms-cache \
-    --window-size=1440,900
+    --window-size=1440,900 \
+    --hide-crash-restore-bubble
   if [ -f /rooms/flags ]; then
     while IFS= read -r flag; do [ -n "$flag" ] && set -- "$@" "$flag"; done < /rooms/flags
   fi
-  chromium "$@" about:blank &
+  # The RestoreOnStartup policy reopens the last session, after a crash too; a URL here would add a tab each time.
+  chromium "$@" &
   chrome=$!
   rc=0
   wait "$chrome" || rc=$?

@@ -499,7 +499,7 @@ async function startRoom(name, { timeoutMs = 60000, image: override } = {}) {
           if (heldBy) return { name, state: "up", browser: v.Browser, failures: 0, heldBy };
           return this.moveToImage(name, target);
         }
-        // Stopping closes the room's tabs, so only a room given an idle limit is ever stopped for it.
+        // Only a room given an idle limit is ever stopped for being idle; its tabs come back at the next up.
         if (room.idle && await quiet(idleMs(room.idle))) {
           const heldBy = await holder();
           if (heldBy) return { name, state: "up", browser: v.Browser, failures: 0, heldBy };
@@ -841,7 +841,7 @@ const USAGE = `usage: rooms init <name> | up <name> | down <name>
        rooms site add <name> <https-url> [--signed-out <regex>] | site list <name>
        rooms check <name>                    which sites are still signed in (exit 1 if any isn't)
        rooms set <name> memory=4G idle=30m device=phone|desktop   used from the next up; idle stops
-                                             a watched room nothing has used for that long, closing its tabs
+                                             a watched room nothing has used for that long; its tabs come back
        rooms snapshot save|list|restore|delete <name> [<id>]   a stopped room's profile
        rooms autostart <name> on|off         start it at login; restart it if its browser stops answering, and
                                              move it to each new Chromium once nothing has used it for an hour

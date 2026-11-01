@@ -12,5 +12,6 @@
   "URLBlocklist": [
     "chrome://*",
     "devtools://*"
-  ]
+  ],
+  "RestoreOnStartup": 1
 }

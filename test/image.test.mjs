@@ -109,3 +109,9 @@ test("the graphics libraries SwiftShader doesn't use are removed in the layer th
   const install = docker.split(/^RUN /m).find((r) => r.includes("apt-get install"));
   for (const lib of ["libllvm19", "mesa-libgallium", "libgl1-mesa-dri", "libz3-4"]) assert.ok(install.includes(lib), `the install layer doesn't remove ${lib}`);
 });
+
+test("a restart brings the room's tabs back, after a clean stop or a crash, and adds none", () => {
+  assert.equal(JSON.parse(readFileSync(policyFile, "utf8")).RestoreOnStartup, 1);
+  flag("--hide-crash-restore-bubble");
+  assert.ok(!/chromium "\$@" about:blank/.test(entry), "a URL argument opens one more tab on every start");
+});
