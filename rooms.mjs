@@ -8,7 +8,7 @@
 import { randomBytes } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync, renameSync, chmodSync, rmSync, readdirSync, openSync, readSync, fstatSync, closeSync, constants as fsc } from "node:fs";
 import { homedir, totalmem } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { connectCdp, browserWsUrl } from "./cdp.mjs";
@@ -29,6 +29,9 @@ export const DEFAULT_SIGNED_OUT = "(^|/)(login|log-in|signin|sign-in|sign_in|aut
 // it: control/<name>/ is host-owned and mounted read-only at /rooms. `stop` asks the guest not to
 // restart Chromium; `flags` holds extra Chromium flags, one per line.
 const LEGACY_MARKERS = [".rooms-stop", ".rooms-flags"];
+const HOUR = 3600000, DAY = 24 * HOUR;
+// How long nothing must have used a room before it moves to a new build of the image.
+const UPDATE_QUIET_MS = HOUR;
 function chromeFlags(flags) {
   if (!Array.isArray(flags) || flags.length > 8) fail("bad_flag", "pass up to eight Chromium flags");
   for (const flag of flags) {
@@ -94,6 +97,14 @@ export function appleContainer(bin = "container") {
       const [d] = JSON.parse(r.stdout);
       return d?.configuration?.image?.descriptor?.digest ?? null;
     },
+    build(tag, dir) {
+      const r = spawnSync(bin, ["build", "--no-cache", "-t", tag, "-f", join(dir, "image", "Dockerfile"), dir], { encoding: "utf8", timeout: 1800000, maxBuffer: 64 * 1024 * 1024 });
+      return { code: r.status ?? 1, stderr: r.stderr ?? String(r.error ?? "") };
+    },
+    tag: (from, to) => spawnSync(bin, ["image", "tag", from, to], { stdio: "ignore", timeout: 120000 }).status === 0,
+    removeImage: (tag) => spawnSync(bin, ["image", "delete", tag], { stdio: "ignore", timeout: 120000 }),
+    // The builder is a VM holding 2 GB while it runs.
+    builderStop: () => spawnSync(bin, ["builder", "stop"], { stdio: "ignore", timeout: 120000 }),
     // The container's runtime helper is a launchd job (label as seen on container 1.6.1) that exits
     // when the container stops, however it stops.
     helperPid(cname) {
@@ -205,7 +216,7 @@ export function createRooms({
   runtime = appleContainer(),
   fetch = globalThis.fetch,
   sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
-  image = process.env.ROOMS_IMAGE || "rooms-chrome:latest",
+  image = process.env.ROOMS_IMAGE || "rooms-chrome:latest", // every room's image; :candidate and :previous sit beside it
   portBase = 9300,
   memory = "3G",
   shm = null,
@@ -218,6 +229,7 @@ export function createRooms({
   launchAgents = join(homedir(), "Library", "LaunchAgents"),
   excludeFromBackup = null, // the CLI passes timeMachineExclude
   notify = null, // the CLI passes macNotify
+  buildContext = dirname(fileURLToPath(import.meta.url)),
 } = {}) {
   const file = join(home, "rooms.json");
   const containerName = (name) => `rooms-${name}`;
@@ -233,6 +245,31 @@ export function createRooms({
   const watcherFile = (name) => join(controlDir(name), "watcher.json");
   // A crashed room the watcher couldn't bring back: {failures, retryAt, error}. down removes it.
   const restartFile = (name) => join(controlDir(name), "restart.json");
+  // The image build a room was moved back from, so it isn't tried again: {skip: digest}.
+  const updateFile = (name) => join(controlDir(name), "update.json");
+  const updateState = join(home, "run", "update.json");
+  const imageTag = (tag) => `${image.replace(/:[^:/]*$/, "")}:${tag}`;
+  // An image's Chromium version, asked once per build: asking starts a container (about 0.8 s).
+  function chromiumOf(tag, digest = runtime.imageInfo?.(tag)?.digest) {
+    const known = join(home, "run", "image-versions.json"), versions = readJson(known) ?? {};
+    if (digest && version(versions[digest])) return versions[digest];
+    const v = runtime.imageVersion(tag);
+    if (digest && version(v)) { mkdirSync(join(home, "run"), { recursive: true, mode: 0o700 }); writeFileSync(known, JSON.stringify({ ...versions, [digest]: v }) + "\n", { mode: 0o600 }); }
+    return v;
+  }
+  // A lock folder holding its maker's pid; one left by a dead process is taken over.
+  function takeLock(lock) {
+    mkdirSync(dirname(lock), { recursive: true, mode: 0o700 });
+    try { mkdirSync(lock, { mode: 0o700 }); }
+    catch (e) {
+      if (e.code !== "EEXIST") throw e;
+      let holder = NaN;
+      try { holder = Number(readFileSync(join(lock, "pid"), "utf8")); } catch {}
+      if (alive(holder)) return holder;
+    }
+    writeFileSync(join(lock, "pid"), String(process.pid), { mode: 0o600 });
+    return null;
+  }
   const readJson = (path) => { try { return JSON.parse(readFileSync(path, "utf8")); } catch { return undefined; } };
 
   function load() {
@@ -273,7 +310,8 @@ export function createRooms({
     return res.json();
   }
 
-async function startRoom(name, { timeoutMs = 60000 } = {}) {
+async function startRoom(name, { timeoutMs = 60000, image: override } = {}) {
+    const img = override ?? image;
     const room = get(name);
     if (!existsSync(room.profile)) fail("profile_missing", `${room.profile} is gone; restore it, or rooms init a new room (it starts signed out)`);
     if (!runtime.available()) fail("runtime_missing", "Apple's `container` CLI isn't installed or isn't running (brew install container; container system start)");
@@ -289,18 +327,13 @@ async function startRoom(name, { timeoutMs = 60000 } = {}) {
     // An older Chromium wipes a newer profile's cookie jar (Linux has no downgrade guard), so a room
     // never starts on an older major version. A patch-level drop changes no database and is logged.
     const profileAt = runtime.imageVersion ? profileVersion(join(room.profile, "Last Version")) : null;
-    const info = profileAt && runtime.imageInfo ? runtime.imageInfo(image) : undefined;
+    const info = profileAt && runtime.imageInfo ? runtime.imageInfo(img) : undefined;
     if (profileAt && info !== null) {
-      // Asking the image starts a container (about 0.8 s), so the answer is kept per image build.
-      const known = join(home, "run", "image-versions.json"), versions = readJson(known) ?? {};
-      let imageAt = info?.digest && version(versions[info.digest]);
-      if (!imageAt) {
-        try { imageAt = version(runtime.imageVersion(image)); } catch (e) { logEvent(name, "version-unknown", { image, error: e.message }); }
-        if (imageAt && info?.digest) { mkdirSync(join(home, "run"), { recursive: true, mode: 0o700 }); writeFileSync(known, JSON.stringify({ ...versions, [info.digest]: imageAt.join(".") }) + "\n", { mode: 0o600 }); }
-      }
+      let imageAt;
+      try { imageAt = version(chromiumOf(img, info?.digest)); } catch (e) { logEvent(name, "version-unknown", { image: img, error: e.message }); }
       if (imageAt && newer(profileAt, imageAt)) {
         const [p, b] = [profileAt.join("."), imageAt.join(".")];
-        if (profileAt[0] > imageAt[0]) fail("profile_newer", `profile ${name} was used by Chromium ${p} and image ${image} has ${b}, which would sign every site out. Rebuild the image (container build --no-cache -t ${image} -f image/Dockerfile . in the rooms folder), or go back to a checkpoint from before: rooms snapshot list ${name}, then rooms snapshot restore ${name} <id>`);
+        if (profileAt[0] > imageAt[0]) fail("profile_newer", `profile ${name} was used by Chromium ${p} and image ${img} has ${b}, which would sign every site out. Build a newer one with rooms update, or go back to a checkpoint from before: rooms snapshot list ${name}, then rooms snapshot restore ${name} <id>`);
         logEvent(name, "image-older", { profile: p, image: b });
       }
     }
@@ -335,7 +368,7 @@ async function startRoom(name, { timeoutMs = 60000 } = {}) {
       "--memory", size(room),
       "--shm-size", shm ?? sharedMemory(size(room)),
       "--label", `rooms.name=${name}`,
-      image,
+      img,
     ]);
     rmSync(envFile, { force: true });
     if (r.code !== 0) fail("runtime_error", `container run: ${r.stderr.trim()}`);
@@ -395,16 +428,8 @@ async function startRoom(name, { timeoutMs = 60000 } = {}) {
     // it, so a lock left by a process that died is taken over.
     async up(name, opts) {
       get(name);
-      const lock = join(controlDir(name), "up.lock");
-      mkdirSync(controlDir(name), { recursive: true, mode: 0o700 });
-      try { mkdirSync(lock, { mode: 0o700 }); }
-      catch (e) {
-        if (e.code !== "EEXIST") throw e;
-        let holder = NaN;
-        try { holder = Number(readFileSync(join(lock, "pid"), "utf8")); } catch {}
-        if (alive(holder)) fail("room_busy", `another rooms up (pid ${holder}) is starting ${name}; wait for it`);
-      }
-      writeFileSync(join(lock, "pid"), String(process.pid), { mode: 0o600 });
+      const lock = join(controlDir(name), "up.lock"), holder = takeLock(lock);
+      if (holder) fail("room_busy", `another rooms up (pid ${holder}) is starting ${name}; wait for it`);
       try { return await startRoom(name, opts); }
       finally { rmSync(lock, { recursive: true, force: true }); }
     },
@@ -453,21 +478,32 @@ async function startRoom(name, { timeoutMs = 60000 } = {}) {
       try { v = await probe(name); } catch {}
       if (v) {
         heartbeatFailures.delete(name);
+        // How long since a client last used the room; asked only when something would act on it.
+        let idle;
+        const quiet = async (ms) => {
+          if (idle === undefined) { idle = null; try { const res = await fetch(`${endpoint(name)}/rooms/activity`, { signal: AbortSignal.timeout(3000) }); if (res.ok) idle = (await res.json()).idleMs; } catch {} }
+          return idle > ms;
+        };
+        // Nor while one of its tabs is held: an agent mid-call, or the user at the viewer.
+        const holder = async () => {
+          try {
+            const res = await fetch(`${endpoint(name)}/json/list`, { signal: AbortSignal.timeout(3000) });
+            const pages = res.ok ? await res.json() : [];
+            return pages.map((p) => leaseHolder(home, `room:${name}:${p.id}`)).find(Boolean)?.owner;
+          } catch { return undefined; }
+        };
+        // A newer build of the image is taken up once nothing has used the room for an hour.
+        const target = runtime.imageInfo?.(image)?.digest, runs = target && runtime.containerImage?.(containerName(name));
+        if (runs && runs !== target && readJson(updateFile(name))?.skip !== target && await quiet(UPDATE_QUIET_MS)) {
+          const heldBy = await holder();
+          if (heldBy) return { name, state: "up", browser: v.Browser, failures: 0, heldBy };
+          return this.moveToImage(name, target);
+        }
         // Stopping closes the room's tabs, so only a room given an idle limit is ever stopped for it.
-        if (room.idle) {
-          let idle;
-          try { const res = await fetch(`${endpoint(name)}/rooms/activity`, { signal: AbortSignal.timeout(3000) }); if (res.ok) idle = (await res.json()).idleMs; } catch {}
-          // Nor while one of its tabs is held: an agent mid-call, or the user at the viewer.
-          let heldBy;
-          if (idle > idleMs(room.idle)) {
-            try {
-              const res = await fetch(`${endpoint(name)}/json/list`, { signal: AbortSignal.timeout(3000) });
-              const pages = res.ok ? await res.json() : [];
-              heldBy = pages.map((p) => leaseHolder(home, `room:${name}:${p.id}`)).find(Boolean)?.owner;
-            } catch {}
-            if (heldBy) return { name, state: "up", browser: v.Browser, failures: 0, heldBy };
-          }
-          if (idle > idleMs(room.idle)) { await this.down(name); logEvent(name, "idle-down", { idleMs: idle }); return { name, state: "stopped_idle", idleMs: idle }; }
+        if (room.idle && await quiet(idleMs(room.idle))) {
+          const heldBy = await holder();
+          if (heldBy) return { name, state: "up", browser: v.Browser, failures: 0, heldBy };
+          await this.down(name); logEvent(name, "idle-down", { idleMs: idle }); return { name, state: "stopped_idle", idleMs: idle };
         }
         return { name, state: "up", browser: v.Browser, failures: 0 };
       }
@@ -477,6 +513,71 @@ async function startRoom(name, { timeoutMs = 60000 } = {}) {
       logEvent(name, "crashed", { failures });
       await this.down(name);
       return this.restart(name, null);
+    },
+
+    // Moves a room onto the image's current build behind a checkpoint. If it doesn't come up, or a
+    // site signed in at its last check is signed out after, the checkpoint and the previous build
+    // come back, and that build isn't tried again.
+    async moveToImage(name, target) {
+      const room = get(name);
+      const before = readEvents(eventsFile(name)).filter((e) => e.event === "check").at(-1)?.sites ?? {};
+      await this.down(name);
+      const id = `pre-update-${new Date(now()).toISOString().replace(/\D/g, "").slice(0, 14)}`;
+      await this.checkpoint(name, id);
+      let problem;
+      try { await this.up(name); } catch (e) { problem = `didn't start (${e.message})`; }
+      if (!problem && (room.sites ?? []).length) {
+        const after = await this.check(name).catch(() => []);
+        const lost = after.filter((s) => s.state === "signed_out" && before[s.origin] === "signed_in").map((s) => s.origin);
+        if (lost.length) problem = `signed out of ${lost.join(", ")}`;
+      }
+      if (!problem) {
+        logEvent(name, "updated", { image: target });
+        const old = (await this.checkpoints(name)).filter((c) => c.kind === "checkpoint" && c.id.startsWith("pre-update-")).slice(0, -2);
+        for (const c of old) await this.prune(name, c.id);
+        return { name, state: "updated", checkpoint: id };
+      }
+      await this.down(name);
+      await this.restore(name, id);
+      mkdirSync(controlDir(name), { recursive: true, mode: 0o700 });
+      writeFileSync(updateFile(name), JSON.stringify({ skip: target }) + "\n", { mode: 0o600 });
+      logEvent(name, "update-rolled-back", { image: target, problem });
+      notify?.("rooms", `${name} stayed on its previous build: the new one ${problem}`);
+      const previous = imageTag("previous");
+      await this.up(name, runtime.imageInfo?.(previous) ? { image: previous } : undefined);
+      return { name, state: "rolled_back", problem, checkpoint: id };
+    },
+
+    // Builds the image again at most once a day, and makes the build the image only if its Chromium
+    // is newer; the build it replaces is kept as :previous. Rooms then move over on their own.
+    async update({ force = false } = {}) {
+      const st = readJson(updateState) ?? {};
+      if (!force && st.checkedAt && now() - Date.parse(st.checkedAt) < DAY) return { state: "not_due", checkedAt: st.checkedAt };
+      const lock = join(home, "run", "update.lock"), holder = takeLock(lock);
+      if (holder) return { state: "busy", pid: holder };
+      const record = (x) => writeFileSync(updateState, JSON.stringify({ ...st, checkedAt: new Date(now()).toISOString(), ...x }) + "\n", { mode: 0o600 });
+      try {
+        const candidate = imageTag("candidate");
+        let r;
+        try { r = runtime.build(candidate, buildContext); } finally { runtime.builderStop?.(); }
+        if (r.code !== 0) {
+          const error = r.stderr.trim().split("\n").at(-1) || "build failed";
+          if (!st.failing) notify?.("rooms", `couldn't build a new room image: ${error}. Rooms keep the one they have; rooms update tries again`);
+          record({ failing: error });
+          return { state: "build_failed", error };
+        }
+        const to = chromiumOf(candidate), from = runtime.imageInfo?.(image) ? chromiumOf(image) : null;
+        if (version(to) && (!version(from) || newer(version(to), version(from)))) {
+          if (from) runtime.tag(image, imageTag("previous"));
+          runtime.tag(candidate, image);
+          runtime.removeImage(candidate);
+          record({ failing: null, promotedAt: new Date(now()).toISOString(), version: to });
+          return { state: "promoted", from, to };
+        }
+        runtime.removeImage(candidate);
+        record({ failing: null });
+        return { state: "current", version: from };
+      } finally { rmSync(lock, { recursive: true, force: true }); }
     },
 
     // Brings a crashed room back. On failure the next try waits twice as long (1 min up to 30), and
@@ -520,11 +621,14 @@ async function startRoom(name, { timeoutMs = 60000 } = {}) {
       // Chromium's security fixes reach a room only through a rebuilt image and a restart.
       const restart = `rooms down ${name} && ${remedies.up(name)}`, rebuild = `container build --no-cache -t ${image} -f image/Dockerfile . (in the rooms folder), then ${restart}`;
       const info = browser ? runtime.imageInfo?.(image) : null, runs = info && runtime.containerImage?.(containerName(name));
-      const days = info?.built ? Math.floor((now() - Date.parse(info.built)) / 86400000) : 0;
+      // Current as of the later of the image's packages and the last build that found nothing newer.
+      const upd = readJson(updateState), fresh = Math.max(info?.built ? Date.parse(info.built) : 0, upd?.checkedAt && !upd.failing ? Date.parse(upd.checkedAt) : 0);
+      const days = fresh ? Math.floor((now() - fresh) / DAY) : 0;
       const stale = !browser ? null
         : protocol < 2 ? { detail: "the room runs an older image, so its device, flags and idle settings may not apply", remedy: rebuild }
         : runs && runs !== info.digest ? { detail: `the room runs an older build than ${image}`, remedy: restart }
-        : days >= 30 ? { detail: `${image}'s packages are ${days} days old, so Chromium may lack security fixes`, remedy: rebuild }
+        : upd?.failing ? { detail: `the last image build failed (${upd.failing})`, remedy: "rooms update" }
+        : days >= 30 ? { detail: `${image}'s packages are ${days} days old, so Chromium may lack security fixes`, remedy: "rooms update" }
         : null;
       add("image", "recommended", !browser ? "skip" : stale ? "warn" : "pass", stale ?? {});
       const lastCheck = readEvents(eventsFile(name)).filter((e) => e.event === "check").at(-1);
@@ -739,7 +843,9 @@ const USAGE = `usage: rooms init <name> | up <name> | down <name>
        rooms set <name> memory=4G idle=30m device=phone|desktop   used from the next up; idle stops
                                              a watched room nothing has used for that long, closing its tabs
        rooms snapshot save|list|restore|delete <name> [<id>]   a stopped room's profile
-       rooms autostart <name> on|off         start it at login; restart it if its browser stops answering
+       rooms autostart <name> on|off         start it at login; restart it if its browser stops answering, and
+                                             move it to each new Chromium once nothing has used it for an hour
+       rooms update                          build the image now; autostarted rooms do it once a day
        rooms endpoint <name> [--ws]          CDP endpoint with its token (http, or the browser ws URL)
        rooms rotate <name>                   a new token; the room keeps running and stays signed in
        rooms logs <name> [--follow] [--until <event>]   what happened to the room
@@ -874,6 +980,10 @@ export async function main(argv, rooms = createRooms({ awake: macAwake, excludeF
         try {
           while (!stopped) {
             try {
+              const u = await rooms.update();
+              if (u.state === "promoted" || u.state === "build_failed") print(u);
+            } catch (e) { print({ name, state: "error", code: e.code ?? "update_failed", error: e.message }); }
+            try {
               const r = await rooms.heartbeat(name);
               if (r.state !== last || r.state === "restarted") print(r);
               last = r.state;
@@ -895,6 +1005,7 @@ export async function main(argv, rooms = createRooms({ awake: macAwake, excludeF
         return 0;
       }
       case "up": print(await rooms.up(name)); return 0;
+      case "update": print(await rooms.update({ force: true })); return 0;
       case "down": print(await rooms.down(name)); return 0;
       case "status": {
         if (!name || name.startsWith("--")) { print(await rooms.list()); return 0; }

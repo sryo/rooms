@@ -244,7 +244,7 @@ test("up refuses only a major-version drop, and says how to get out of it", asyn
   version = "155.0.7000.1";
   const e = await rooms.up("work").catch((x) => x);
   assert.equal(e.code, "profile_newer");
-  assert.match(e.message, /container build/);
+  assert.match(e.message, /rooms update/);
   assert.match(e.message, /rooms snapshot restore work/);
 });
 
@@ -537,7 +537,8 @@ test("doctor warns when the room runs an older build than the image, or the imag
   let running = "sha256:new", built = "2026-10-30T00:00:00Z";
   runtime.imageInfo = () => ({ digest: "sha256:new", built });
   runtime.containerImage = () => running;
-  const rooms = createRooms({ home: tmpHome(), runtime, fetch, sleep: async () => {}, physicalMemory: 64 * 2 ** 30, now: () => Date.parse("2026-10-31T00:00:00Z") });
+  const home = tmpHome();
+  const rooms = createRooms({ home, runtime, fetch, sleep: async () => {}, physicalMemory: 64 * 2 ** 30, now: () => Date.parse("2026-10-31T00:00:00Z") });
   await rooms.init("work");
   await rooms.up("work");
   const image = async () => Object.fromEntries((await rooms.doctor("work")).checks.map((c) => [c.id, c])).image;
@@ -551,7 +552,14 @@ test("doctor warns when the room runs an older build than the image, or the imag
   i = await image();
   assert.equal(i.status, "warn");
   assert.match(i.detail, /41 days/);
-  assert.match(i.remedy, /container build --no-cache /, "a cached build keeps the old Chromium");
+  assert.equal(i.remedy, "rooms update");
+  mkdirSync(join(home, "run"), { recursive: true });
+  writeFileSync(join(home, "run", "update.json"), JSON.stringify({ checkedAt: "2026-10-30T12:00:00Z", failing: null }));
+  assert.equal((await image()).status, "pass", "a recent build that found nothing newer counts as current");
+  writeFileSync(join(home, "run", "update.json"), JSON.stringify({ checkedAt: "2026-10-30T12:00:00Z", failing: "apt failed" }));
+  i = await image();
+  assert.equal(i.status, "warn");
+  assert.match(i.detail, /apt failed/);
 });
 
 test("up holds a lock while it starts the room: a second up meanwhile is refused, one left by a dead process is taken over", async () => {
