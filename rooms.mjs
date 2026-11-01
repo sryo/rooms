@@ -6,7 +6,7 @@
 // fresh profile behind the user's back (a fresh profile is a signed-out one).
 
 import { randomBytes } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync, renameSync, chmodSync, rmSync, readdirSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync, renameSync, chmodSync, rmSync, readdirSync, openSync, readSync, fstatSync, closeSync, constants as fsc } from "node:fs";
 import { homedir, totalmem } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
@@ -104,15 +104,18 @@ export function appleContainer(bin = "container") {
   };
 }
 
-function versionParts(s) {
-  const m = String(s).trim().match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
-  if (!m) fail("profile_version", `invalid Chromium profile version '${String(s).trim()}'`);
-  return m.slice(1).map(Number);
-}
-function newer(a, b) {
-  const x = versionParts(a), y = versionParts(b);
-  for (let i = 0; i < 4; i++) if (x[i] !== y[i]) return x[i] > y[i];
-  return false;
+const version = (s) => { const m = /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(String(s ?? "").trim()); return m ? m.slice(1).map(Number) : null; };
+const newer = (x, y) => { for (let i = 0; i < 4; i++) if (x[i] !== y[i]) return x[i] > y[i]; return false; };
+// The profile's Last Version, written by the guest, so it may be a link, a pipe or anything else:
+// opened without following links or blocking, and only a small regular file is read.
+function profileVersion(path) {
+  let fd;
+  try { fd = openSync(path, fsc.O_RDONLY | fsc.O_NOFOLLOW | fsc.O_NONBLOCK); } catch { return null; }
+  try {
+    if (!fstatSync(fd).isFile()) return null;
+    const buf = Buffer.alloc(64);
+    return version(buf.toString("utf8", 0, readSync(fd, buf, 0, 64, 0)));
+  } catch { return null; } finally { closeSync(fd); }
 }
 // Whether a pid is a live process (EPERM: alive, but another user's).
 const alive = (pid) => {
@@ -275,15 +278,23 @@ async function startRoom(name, { timeoutMs = 60000 } = {}) {
     const running = [...containers()].filter(([id, s]) => id.startsWith("rooms-") && s === "running").map(([id]) => all[id.slice(6)]);
     const used = running.reduce((n, r) => n + mebibytes(size(r)), 0);
     if ((used + mebibytes(size(room))) * 1048576 > 0.8 * physicalMemory) fail("no_memory", `${running.length} rooms are up using ${Math.round(used / 1024)} GB; ${name} needs ${size(room)} more, past 80% of this Mac's ${Math.round(physicalMemory / 2 ** 30)} GB. rooms list shows them; rooms down one that isn't in use`);
-    const lastVersion = join(room.profile, "Last Version");
-    if (existsSync(lastVersion) && runtime.imageVersion) {
-      const profileVersion = readFileSync(lastVersion, "utf8").trim();
+    // An older Chromium wipes a newer profile's cookie jar (Linux has no downgrade guard), so a room
+    // never starts on an older major version. A patch-level drop changes no database and is logged.
+    const profileAt = runtime.imageVersion ? profileVersion(join(room.profile, "Last Version")) : null;
+    const info = profileAt && runtime.imageInfo ? runtime.imageInfo(image) : undefined;
+    if (profileAt && info !== null) {
       // Asking the image starts a container (about 0.8 s), so the answer is kept per image build.
-      const digest = runtime.imageInfo?.(image)?.digest, known = join(home, "run", "image-versions.json");
-      const versions = (digest && readJson(known)) || {};
-      const browserVersion = versions[digest] ?? runtime.imageVersion(image);
-      if (digest && !versions[digest]) { mkdirSync(join(home, "run"), { recursive: true, mode: 0o700 }); writeFileSync(known, JSON.stringify({ [digest]: browserVersion }) + "\n", { mode: 0o600 }); }
-      if (newer(profileVersion, browserVersion)) fail("profile_newer", `profile ${name} was used by Chromium ${profileVersion}; image ${image} has ${browserVersion}`);
+      const known = join(home, "run", "image-versions.json"), versions = readJson(known) ?? {};
+      let imageAt = info?.digest && version(versions[info.digest]);
+      if (!imageAt) {
+        try { imageAt = version(runtime.imageVersion(image)); } catch (e) { logEvent(name, "version-unknown", { image, error: e.message }); }
+        if (imageAt && info?.digest) { mkdirSync(join(home, "run"), { recursive: true, mode: 0o700 }); writeFileSync(known, JSON.stringify({ ...versions, [info.digest]: imageAt.join(".") }) + "\n", { mode: 0o600 }); }
+      }
+      if (imageAt && newer(profileAt, imageAt)) {
+        const [p, b] = [profileAt.join("."), imageAt.join(".")];
+        if (profileAt[0] > imageAt[0]) fail("profile_newer", `profile ${name} was used by Chromium ${p} and image ${image} has ${b}, which would sign every site out. Rebuild the image (container build --no-cache -t ${image} -f image/Dockerfile . in the rooms folder), or go back to a checkpoint from before: rooms snapshot list ${name}, then rooms snapshot restore ${name} <id>`);
+        logEvent(name, "image-older", { profile: p, image: b });
+      }
     }
     if (state) runtime.exec(["delete", cname]); // a stopped leftover; the profile is on the host, so nothing is lost
     for (const m of LEGACY_MARKERS) rmSync(join(room.profile, m), { force: true }); // a link is removed, not followed

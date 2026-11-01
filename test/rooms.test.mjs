@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, statSync, readFileSync, mkdirSync, rmSync, writeFileSync, copyFileSync } from "node:fs";
+import { existsSync, statSync, readFileSync, mkdirSync, rmSync, writeFileSync, copyFileSync, symlinkSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { createRooms, RoomsError } from "../rooms.mjs";
 import { tmpHome, fakeRuntime, fakeFetch } from "./helpers.mjs";
@@ -228,6 +229,60 @@ test("up checks the image's Chromium version once per image build", async () => 
   assert.equal(checks, 2);
   assert.equal(await code(() => rooms.up("work")), "profile_newer", "a cached older version is refused too");
   assert.equal(checks, 2);
+});
+
+test("up refuses only a major-version drop, and says how to get out of it", async () => {
+  const runtime = fakeRuntime();
+  let version = "156.0.8078.73";
+  runtime.imageVersion = () => version;
+  const { rooms } = make({ runtime });
+  const r = await rooms.init("work");
+  writeFileSync(join(r.profile, "Last Version"), "156.0.8078.80\n");
+  await rooms.up("work");
+  assert.ok((await rooms.events("work")).some((e) => e.event === "image-older" && e.profile === "156.0.8078.80"), "a patch-level drop starts, and is logged");
+  await rooms.down("work");
+  version = "155.0.7000.1";
+  const e = await rooms.up("work").catch((x) => x);
+  assert.equal(e.code, "profile_newer");
+  assert.match(e.message, /container build/);
+  assert.match(e.message, /rooms snapshot restore work/);
+});
+
+test("up reads Last Version only as a small plain file, and never repeats what it holds", async () => {
+  const runtime = fakeRuntime();
+  let checks = 0;
+  runtime.imageVersion = () => { checks++; return "156.0.8078.73"; };
+  const { home, rooms } = make({ runtime });
+  const r = await rooms.init("work");
+  const lv = join(r.profile, "Last Version"), secret = join(home, "secret");
+  writeFileSync(secret, "999.0.0.0");
+  symlinkSync(secret, lv);
+  await rooms.up("work"); await rooms.down("work");
+  rmSync(lv);
+  writeFileSync(lv, "TOPSECRET garbage");
+  await rooms.up("work"); await rooms.down("work");
+  rmSync(lv);
+  spawnSync("mkfifo", [lv]);
+  await rooms.up("work"); await rooms.down("work");
+  assert.equal(checks, 0, "an unusable file skips the check rather than blocking the room");
+  assert.ok(!JSON.stringify(await rooms.events("work")).includes("TOPSECRET"));
+});
+
+test("a version probe that fails doesn't block up, and the cache keeps every build it has seen", async () => {
+  const runtime = fakeRuntime();
+  let digest = "sha256:a", checks = 0, broken = true;
+  runtime.imageInfo = () => ({ digest });
+  runtime.imageVersion = () => { checks++; if (broken) throw new RoomsError("runtime_error", "builder hiccup"); return "156.0.8078.73"; };
+  const { rooms } = make({ runtime });
+  const r = await rooms.init("work");
+  writeFileSync(join(r.profile, "Last Version"), "156.0.8078.73");
+  await rooms.up("work"); await rooms.down("work");
+  broken = false;
+  for (const d of ["sha256:a", "sha256:b", "sha256:a", "sha256:b"]) { digest = d; await rooms.up("work"); await rooms.down("work"); }
+  assert.equal(checks, 3, "a failed probe isn't cached; a and b are each asked once");
+  runtime.imageInfo = () => null;
+  await rooms.up("work");
+  assert.equal(checks, 3, "a missing image is left for container run to report");
 });
 
 test("checkpoint clones a stopped profile, restore keeps its replaced profile, and prune removes only the checkpoint", async () => {
