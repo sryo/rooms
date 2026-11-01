@@ -26,7 +26,7 @@ When two goals conflict, the higher one wins.
 | 2 | no stop or move while a lease is held or the room was used in the last hour | `test/update.test.mjs`, `test/rooms.test.mjs` (idle stop and held tabs), `test/leases.test.mjs` |
 | 3 | days the image is behind; restart and update failures | `rooms status <name> --deep` (image, container), `test/update.test.mjs`, `test/rooms.test.mjs` |
 | 4 | room memory against the 80% cap; profile size | `test/rooms.test.mjs` (the 80% check), manual (`du -sh ~/.rooms/profiles/<name>`) |
-| 5 | seconds from `rooms up` to CDP | manual (`up` and `down` times in `rooms logs <name>`) |
+| 5 | median ms from `rooms up` to CDP, over the last 10 ups | `rooms logs <name> --up-ms` (each `up` event logs `ms`) |
 
 Caps: `q3 k2 n2 b2 t1` (how firm each kind of number is: 3 never grows, 2 needs the owner's price, 1 may grow 10%, 0 only reported; fium RULES.md K6)
 

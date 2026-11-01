@@ -36,6 +36,20 @@ test("up logs how long it took from the start of up to CDP answering, in ms", as
   assert.equal(up.ms, 3000);
 });
 
+test("rooms logs --up-ms N prints the median ms of the last N ups that logged one", async () => {
+  const { rooms } = make();
+  await rooms.init("work");
+  await rooms.logEvent("work", "up", { browser: "Chromium/149.0" }); // from before up logged ms
+  for (const ms of [9000, 2000, 4000, 3000]) await rooms.logEvent("work", "up", { browser: "Chromium/150.0", ms });
+  await rooms.logEvent("work", "down", {});
+  const lines = [];
+  assert.equal(await main(["logs", "work", "--up-ms", "3"], rooms, (l) => lines.push(l), { tty: false }), 0);
+  assert.deepEqual(lines.map((l) => JSON.parse(l)), [{ name: "work", ups: 3, medianMs: 3000 }]);
+  lines.length = 0;
+  await main(["logs", "work", "--up-ms"], rooms, (l) => lines.push(l), { tty: false });
+  assert.deepEqual(JSON.parse(lines[0]), { name: "work", ups: 4, medianMs: 3500 });
+});
+
 test("the log is capped: past its size the older half moves aside once, and reading sees both", () => {
   const dir = tmpHome(), file = join(dir, "events.jsonl");
   for (let i = 0; i < 40; i++) appendEvent(file, "tick", { i }, { maxBytes: 400 });

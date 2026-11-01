@@ -857,6 +857,7 @@ const USAGE = `usage: rooms init <name> | up <name> | down <name>
        rooms endpoint <name> [--ws]          CDP endpoint with its token (http, or the browser ws URL)
        rooms rotate <name>                   a new token; the room keeps running and stays signed in
        rooms logs <name> [--follow] [--until <event>]   what happened to the room
+       rooms logs <name> --up-ms [<n>]       median ms from up to CDP over the last n ups (10)
        rooms flags set <name> <flag>... | flags list <name>   custom Chromium flags instead of a device
 Output is JSON when piped or with --json. Older names still work: list, doctor, checkpoint(s),
 restore, prune, watch, view --signin.`;
@@ -1021,6 +1022,13 @@ export async function main(argv, rooms = createRooms({ awake: macAwake, excludeF
         // --follow prints new events as they come; --until <event> also stops at the first such
         // event logged after the command started, so an agent can wait for, say, handoff.ended.
         // New events are found after the last one printed, which survives the log's rotation.
+        if (argv.includes("--up-ms")) {
+          const n = Number(opt(argv, "--up-ms")) || 10;
+          const ms = (await rooms.events(name)).filter((e) => e.event === "up" && typeof e.ms === "number").slice(-n).map((e) => e.ms).sort((a, b) => a - b);
+          const mid = ms.length >> 1;
+          print({ name, ups: ms.length, medianMs: ms.length ? (ms.length % 2 ? ms[mid] : (ms[mid - 1] + ms[mid]) / 2) : null });
+          return 0;
+        }
         const until = opt(argv, "--until");
         let last = null, first = true, stop = false;
         const onSignal = () => { stop = true; };
