@@ -423,6 +423,29 @@ test("doctor lists each check with pass|warn|fail|skip, how much it matters, and
   assert.equal(Object.fromEntries((await rooms.doctor("work")).checks.map((c) => [c.id, c])).image.status, "pass");
 });
 
+test("doctor warns when the room runs an older build than the image, or the image is a month old", async () => {
+  const fetch = async (url) => ({ ok: true, status: 200, json: async () => (url.endsWith("/health") ? { ok: true, protocol: 2 } : { Browser: "Chromium/156.0" }) });
+  const runtime = fakeRuntime();
+  let running = "sha256:new", built = "2026-10-30T00:00:00Z";
+  runtime.imageInfo = () => ({ digest: "sha256:new", built });
+  runtime.containerImage = () => running;
+  const rooms = createRooms({ home: tmpHome(), runtime, fetch, sleep: async () => {}, physicalMemory: 64 * 2 ** 30, now: () => Date.parse("2026-10-31T00:00:00Z") });
+  await rooms.init("work");
+  await rooms.up("work");
+  const image = async () => Object.fromEntries((await rooms.doctor("work")).checks.map((c) => [c.id, c])).image;
+  assert.equal((await image()).status, "pass");
+  running = "sha256:old";
+  let i = await image();
+  assert.equal(i.status, "warn");
+  assert.match(i.detail, /older build/);
+  assert.equal(i.remedy, "rooms down work && rooms up work", "the image is already built: a restart is enough");
+  running = "sha256:new"; built = "2026-09-20T00:00:00Z";
+  i = await image();
+  assert.equal(i.status, "warn");
+  assert.match(i.detail, /41 days/);
+  assert.match(i.remedy, /container build --no-cache /, "a cached build keeps the old Chromium");
+});
+
 test("up holds a lock while it starts the room: a second up meanwhile is refused, one left by a dead process is taken over", async () => {
   const { home, rooms } = make();
   await rooms.init("work");

@@ -78,6 +78,22 @@ export function appleContainer(bin = "container") {
       if (!v) fail("runtime_error", `could not parse ${image}'s Chromium version`);
       return v[1];
     },
+    // The image's index digest, and when its packages were installed: the apt layer's date, which a
+    // cached rebuild keeps.
+    imageInfo(image) {
+      const r = spawnSync(bin, ["image", "inspect", image], { encoding: "utf8", timeout: 120000 });
+      if (r.status !== 0) return null;
+      const [d] = JSON.parse(r.stdout);
+      const history = d.variants?.[0]?.config?.history ?? [];
+      const built = history.filter((h) => /apt-get install/.test(h.created_by ?? "")).at(-1)?.created ?? d.configuration?.creationDate;
+      return { digest: d.configuration?.descriptor?.digest, built };
+    },
+    containerImage(cname) {
+      const r = spawnSync(bin, ["inspect", cname], { encoding: "utf8", timeout: 120000 });
+      if (r.status !== 0) return null;
+      const [d] = JSON.parse(r.stdout);
+      return d?.configuration?.image?.descriptor?.digest ?? null;
+    },
     // The container's runtime helper is a launchd job (label as seen on container 1.6.1) that exits
     // when the container stops, however it stops.
     helperPid(cname) {
@@ -186,6 +202,7 @@ export function createRooms({
   memory = "3G",
   shm = null,
   physicalMemory = totalmem(),
+  now = Date.now,
   connect = (url) => connectCdp(url),
   awake = null, // the CLI passes macAwake; library users and tests hold nothing
   keychain = macKeychain,
@@ -457,7 +474,16 @@ async function startRoom(name, { timeoutMs = 60000 } = {}) {
       add("cdp", "required", !running ? "skip" : browser ? "pass" : "fail", cdpError ? { detail: cdpError, remedy: `rooms down ${name} && ${remedies.up(name)}` } : {});
       let protocol = 0;
       if (browser) { try { const res = await fetch(`http://${room.cdp.host}:${room.cdp.port}/health`, { signal: AbortSignal.timeout(3000) }); if (res.ok) protocol = (await res.json()).protocol ?? 0; } catch {} }
-      add("image", "recommended", !browser ? "skip" : protocol >= 2 ? "pass" : "warn", browser && protocol < 2 ? { detail: "the room runs an older image, so its device, flags and idle settings may not apply", remedy: `container build -t rooms-chrome:latest -f image/Dockerfile . (in the rooms folder), then rooms down ${name} && ${remedies.up(name)}` } : {});
+      // Chromium's security fixes reach a room only through a rebuilt image and a restart.
+      const restart = `rooms down ${name} && ${remedies.up(name)}`, rebuild = `container build --no-cache -t ${image} -f image/Dockerfile . (in the rooms folder), then ${restart}`;
+      const info = browser ? runtime.imageInfo?.(image) : null, runs = info && runtime.containerImage?.(containerName(name));
+      const days = info?.built ? Math.floor((now() - Date.parse(info.built)) / 86400000) : 0;
+      const stale = !browser ? null
+        : protocol < 2 ? { detail: "the room runs an older image, so its device, flags and idle settings may not apply", remedy: rebuild }
+        : runs && runs !== info.digest ? { detail: `the room runs an older build than ${image}`, remedy: restart }
+        : days >= 30 ? { detail: `${image}'s packages are ${days} days old, so Chromium may lack security fixes`, remedy: rebuild }
+        : null;
+      add("image", "recommended", !browser ? "skip" : stale ? "warn" : "pass", stale ?? {});
       const lastCheck = readEvents(eventsFile(name)).filter((e) => e.event === "check").at(-1);
       const notIn = lastCheck ? Object.entries(lastCheck.sites ?? {}).filter(([, st]) => st !== "signed_in").map(([o]) => o) : [];
       add("sites", "info", !(room.sites ?? []).length ? "skip" : !lastCheck || notIn.length ? "warn" : "pass", (room.sites ?? []).length && (!lastCheck || notIn.length) ? { detail: lastCheck ? `not signed in at the last check: ${notIn.join(", ")}` : "never checked", remedy: remedies.check(name) } : {});

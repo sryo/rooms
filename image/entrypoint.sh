@@ -12,9 +12,10 @@ else [ -n "${ROOMS_TOKEN:-}" ] || { echo "rooms: ROOMS_TOKEN missing; refusing t
 # A container that was killed leaves Chromium's singleton files naming the old hostname, which
 # makes the next Chromium refuse the profile. Only one Chromium runs per room, so they are stale.
 rm -f /profile/SingletonLock /profile/SingletonSocket /profile/SingletonCookie
-# V8's compiled-script cache is most of a profile's size and Chromium rebuilds it. Cleared here, in
-# the guest, because the host must not delete inside a folder the guest controls.
-rm -rf "/profile/Default/Code Cache"
+# The caches go on the container's own disk (--disk-cache-dir below), not in the profile on the Mac,
+# and a new container starts without them. Profiles from before that still hold theirs: cleared
+# here, in the guest, because the host must not delete inside a folder the guest controls.
+rm -rf "/profile/Default/Code Cache" "/profile/Default/Cache"
 
 # Xvfb and the relay are restarted if they die: without either the room answers
 # nothing until someone runs down and up.
@@ -40,6 +41,7 @@ while [ "$stopping" = 0 ]; do
     --disable-features=BackForwardCache,Translate,OptimizationHints,MediaRouter \
     --disable-component-extensions-with-background-pages \
     --disk-cache-size=67108864 \
+    --disk-cache-dir=/tmp/rooms-cache \
     --window-size=1440,900
   if [ -f /rooms/flags ]; then
     while IFS= read -r flag; do [ -n "$flag" ] && set -- "$@" "$flag"; done < /rooms/flags

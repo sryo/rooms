@@ -99,3 +99,13 @@ test("the relay reads the token from the read-only control mount when it's there
   assert.match(entry, /\[ -s \/rooms\/token \]/);
   assert.match(entry, /export ROOMS_TOKEN_FILE=\/rooms\/token/);
 });
+
+test("caches live on the room's own disk, not in the profile mounted from the Mac", () => {
+  flag("--disk-cache-dir=/tmp/rooms-cache");
+  assert.ok(!/--disk-cache-dir=\/(profile|dev\/shm)/.test(entry), "not the profile, not RAM");
+});
+
+test("the graphics libraries SwiftShader doesn't use are removed in the layer that installs them", () => {
+  const install = docker.split(/^RUN /m).find((r) => r.includes("apt-get install"));
+  for (const lib of ["libllvm19", "mesa-libgallium", "libgl1-mesa-dri", "libz3-4"]) assert.ok(install.includes(lib), `the install layer doesn't remove ${lib}`);
+});
