@@ -73,7 +73,7 @@ export async function copyCookies({ sourceProfile, roomProfile, sites, password 
   const roomPath = cookieFile(roomProfile);
   if (!sourcePath) throw new Error("source_profile_missing: source Cookies database is missing");
   if (!roomPath) throw new Error("room_never_started: the room has no Cookies database; start and stop it once");
-  const scratch = mkdtempSync(join(tmpdir(), "rooms-teleport-"));
+  const scratch = mkdtempSync(join(tmpdir(), "rooms-cookies-"));
   chmodSync(scratch, 0o700);
   const snapshotPath = join(scratch, "Cookies");
   let source, snapshot, room;

@@ -779,13 +779,13 @@ async function startRoom(name, { timeoutMs = 60000, image: override } = {}) {
       return { name, id, pruned: true };
     },
 
-    async teleport(name, { from, sites } = {}) {
-      const { siteNames, cookieFile, copyCookies } = await import("./teleport.mjs");
+    async copyCookies(name, { from, sites } = {}) {
+      const { siteNames, cookieFile, copyCookies } = await import("./cookies.mjs");
       let selected;
       try { selected = siteNames(sites); }
       catch (e) { const [code, message] = String(e.message).split(": "); fail(code, message); }
       const room = get(name);
-      if (containers().get(containerName(name)) === "running") fail("room_up", `room '${name}' is up; rooms down ${name} before teleport`);
+      if (containers().get(containerName(name)) === "running") fail("room_up", `room '${name}' is up; rooms down ${name} before signin --from`);
       const roomProfile = join(room.profile, "Default");
       // The guest could have swapped any of these for a link; the host would then write elsewhere.
       for (const p of [roomProfile, join(roomProfile, "Network"), join(roomProfile, "Network", "Cookies"), join(roomProfile, "Cookies")]) {
@@ -807,7 +807,7 @@ async function startRoom(name, { timeoutMs = 60000, image: override } = {}) {
       catch (e) {
         const [code, ...rest] = String(e.message).split(": ");
         if (/^[a-z_]+$/.test(code) && rest.length) fail(code, rest.join(": "));
-        fail("teleport_failed", `cookie transfer failed (${e.message}); the room profile was not partially updated`);
+        fail("copy_failed", `cookie transfer failed (${e.message}); the room profile was not partially updated`);
       }
     },
 
@@ -857,8 +857,8 @@ const USAGE = `usage: rooms init <name> | up <name> | down <name>
        rooms rotate <name>                   a new token; the room keeps running and stays signed in
        rooms logs <name> [--follow] [--until <event>]   what happened to the room
        rooms flags set <name> <flag>... | flags list <name>   custom Chromium flags instead of a device
-Output is JSON when piped or with --json. Older names still work: list, doctor, teleport,
-checkpoint(s), restore, prune, watch, view --signin.`;
+Output is JSON when piped or with --json. Older names still work: list, doctor, checkpoint(s),
+restore, prune, watch, view --signin.`;
 const opt = (argv, f) => { const i = argv.indexOf(f); return i >= 0 ? argv[i + 1] : undefined; };
 export async function main(argv, rooms = createRooms({ awake: macAwake, excludeFromBackup: timeMachineExclude, notify: macNotify }), out = console.log, {
   tty = process.stdout.isTTY,
@@ -934,7 +934,7 @@ export async function main(argv, rooms = createRooms({ awake: macAwake, excludeF
       case "signin": {
         if (!argv.includes("--from")) return await view(name, argv[2], argv.includes("--no-open"));
         const sites = argv.slice(2).filter((a, i, all) => a !== "--from" && all[i - 1] !== "--from").flatMap((s) => s.split(",")).filter(Boolean);
-        const copied = { ...await rooms.teleport(name, { from: opt(argv, "--from"), sites }), copiedOnly: "cookies" };
+        const copied = { ...await rooms.copyCookies(name, { from: opt(argv, "--from"), sites }), copiedOnly: "cookies" };
         if (!json) out(`Copied ${copied.copied} cookies${copied.hosts ? ` for ${copied.hosts.join(", ")}` : ""}. Cookies only: passwords, local storage and other site data stay in the browser.`);
         // With sites to check, find out now which ones the cookies didn't sign in.
         if (!(await rooms.sites(name)).length) {
@@ -948,13 +948,6 @@ export async function main(argv, rooms = createRooms({ awake: macAwake, excludeF
         else if (!missing.length) out("Every site is signed in.");
         else for (const s of missing) out(`${s.state === "unknown" ? "couldn't check" : "still needs a sign-in"}: ${s.origin}  -> ${s.remedy}`);
         return missing.length ? 1 : 0;
-      }
-      case "teleport": { // older name for signin --from
-        const sites = opt(argv, "--sites")?.split(",");
-        const r = await rooms.teleport(name, { from: opt(argv, "--from"), sites });
-        print(r);
-        if (!json) out(`Next: ${remedies.up(name)}; rooms check ${name}`);
-        return 0;
       }
       case "snapshot": {
         const [, sub, room, id] = argv;

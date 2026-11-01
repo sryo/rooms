@@ -4,7 +4,7 @@ import { mkdirSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { createRooms, RoomsError, main } from "../rooms.mjs";
-import { chromeKey, encryptCookie, decryptCookie, ROOM_KEY } from "../teleport.mjs";
+import { chromeKey, encryptCookie, decryptCookie, ROOM_KEY } from "../cookies.mjs";
 import { tmpHome, fakeRuntime, fakeFetch } from "./helpers.mjs";
 
 const SCHEMA = `CREATE TABLE meta(key LONGVARCHAR NOT NULL UNIQUE PRIMARY KEY, value LONGVARCHAR);
@@ -51,10 +51,10 @@ async function room(s, name = "work") {
 }
 const code = (p) => p.then(() => null, (e) => (e instanceof RoomsError ? e.code : e.message));
 
-test("teleport copies only the named sites' cookies, re-encrypted for the room, and keeps the room's own", async () => {
+test("copying cookies copies only the named sites' cookies, re-encrypted for the room, and keeps the room's own", async () => {
   const s = setup();
   await room(s);
-  const r = await s.rooms.teleport("work", { from: s.srcProfile, sites: ["b.test"] });
+  const r = await s.rooms.copyCookies("work", { from: s.srcProfile, sites: ["b.test"] });
   assert.equal(r.copied, 2);
   assert.deepEqual(r.hosts, [".b.test", "boards.b.test"]);
   assert.deepEqual(read(join(s.home, "profiles", "work", "Default", "Cookies"), ROOM_KEY), [
@@ -64,25 +64,25 @@ test("teleport copies only the named sites' cookies, re-encrypted for the room, 
   ]);
 });
 
-test("teleport never runs while the room is up (Chromium owns the profile)", async () => {
+test("copying cookies never runs while the room is up (Chromium owns the profile)", async () => {
   const s = setup({ up: true });
   await room(s);
-  assert.equal(await code(s.rooms.teleport("work", { from: s.srcProfile, sites: ["b.test"] })), "room_up");
+  assert.equal(await code(s.rooms.copyCookies("work", { from: s.srcProfile, sites: ["b.test"] })), "room_up");
 });
 
-test("teleport needs sites, and a room that has run once", async () => {
+test("copying cookies needs sites, and a room that has run once", async () => {
   const s = setup({ roomDb: false });
   await room(s);
-  assert.equal(await code(s.rooms.teleport("work", { from: s.srcProfile, sites: [] })), "no_sites");
-  assert.equal(await code(s.rooms.teleport("work", { from: s.srcProfile, sites: ["b.test"] })), "room_never_started");
+  assert.equal(await code(s.rooms.copyCookies("work", { from: s.srcProfile, sites: [] })), "no_sites");
+  assert.equal(await code(s.rooms.copyCookies("work", { from: s.srcProfile, sites: ["b.test"] })), "room_never_started");
 });
 
 test("a site name matches the domain and its subdomains, never a lookalike", async () => {
   const s = setup();
   await room(s);
-  const r = await s.rooms.teleport("work", { from: s.srcProfile, sites: ["house.io"] });
+  const r = await s.rooms.copyCookies("work", { from: s.srcProfile, sites: ["house.io"] });
   assert.equal(r.copied, 0);
-  assert.equal(await code(s.rooms.teleport("work", { from: s.srcProfile, sites: ["example"] })), "bad_site");
+  assert.equal(await code(s.rooms.copyCookies("work", { from: s.srcProfile, sites: ["example"] })), "bad_site");
 });
 
 test("the cookie crypto round-trips and binds the value to its host (DB version 24)", () => {
@@ -94,14 +94,14 @@ test("the cookie crypto round-trips and binds the value to its host (DB version 
   assert.equal(decryptCookie(encryptCookie("w", k, "h", 23), k, "h", 23), "w");
 });
 
-test("teleport preserves Chromium's microsecond timestamps outside JavaScript's safe integer range", async () => {
+test("copying cookies preserves Chromium's microsecond timestamps outside JavaScript's safe integer range", async () => {
   const s = setup();
   await room(s);
   const source = new DatabaseSync(join(s.srcProfile, "Network", "Cookies"));
   const timestamp = 13437922944957903n;
   source.prepare("UPDATE cookies SET creation_utc = ? WHERE name = ?").run(timestamp, "session");
   source.close();
-  await s.rooms.teleport("work", { from: s.srcProfile, sites: ["b.test"] });
+  await s.rooms.copyCookies("work", { from: s.srcProfile, sites: ["b.test"] });
   const target = new DatabaseSync(join(s.home, "profiles", "work", "Default", "Cookies"), { readOnly: true, readBigInts: true });
   assert.equal(target.prepare("SELECT creation_utc FROM cookies WHERE name = ?").get("session").creation_utc, timestamp);
   target.close();
@@ -112,37 +112,26 @@ test("a wrong Keychain secret leaves all room cookies unchanged", async () => {
   await room(s);
   const before = read(join(s.home, "profiles", "work", "Default", "Cookies"), ROOM_KEY);
   const wrong = createRooms({ home: s.home, runtime: s.runtime, fetch: fakeFetch(), keychain: () => "wrong-secret" });
-  assert.equal(await code(wrong.teleport("work", { from: s.srcProfile, sites: ["b.test"] })), "teleport_failed");
+  assert.equal(await code(wrong.copyCookies("work", { from: s.srcProfile, sites: ["b.test"] })), "copy_failed");
   assert.deepEqual(read(join(s.home, "profiles", "work", "Default", "Cookies"), ROOM_KEY), before);
 });
 
-test("CLI parses a named source and site list without printing cookie values", async () => {
-  let got;
-  const output = [];
-  const code = await main(["teleport", "work", "--from", "canary", "--sites", "a.com,b.com"], {
-    teleport: async (name, options) => { got = { name, options }; return { copied: 2, hosts: ["a.com"] }; },
-  }, (line) => output.push(line));
-  assert.equal(code, 0);
-  assert.deepEqual(got, { name: "work", options: { from: "canary", sites: ["a.com", "b.com"] } });
-  assert.match(output.join("\n"), /"copied":2/);
-  assert.doesNotMatch(output.join("\n"), /cookie|secret/i);
-});
 
-test("teleport refuses a room whose cookie path runs through a link the guest could have planted", async () => {
+test("copying cookies refuses a room whose cookie path runs through a link the guest could have planted", async () => {
   const s = setup();
   await s.rooms.init("work");
   const outside = join(s.home, "outside", "Default");
   mkdirSync(outside, { recursive: true });
   cookiesDb(join(outside, "Cookies"), [[".x.test", "x", "untouched"]], ROOM_KEY);
   symlinkSync(outside, join(s.home, "profiles", "work", "Default"));
-  assert.equal(await code(s.rooms.teleport("work", { from: s.srcProfile, sites: ["b.test"] })), "profile_link");
+  assert.equal(await code(s.rooms.copyCookies("work", { from: s.srcProfile, sites: ["b.test"] })), "profile_link");
   assert.deepEqual(read(join(outside, "Cookies"), ROOM_KEY), [[".x.test", "x", "untouched"]]);
 });
 
-test("teleport refuses a public suffix, which would copy every site under it", async () => {
+test("copying cookies refuses a public suffix, which would copy every site under it", async () => {
   const s = setup();
   await room(s);
   for (const site of ["co.uk", "com.ar", "github.io", "com"]) {
-    assert.equal(await code(s.rooms.teleport("work", { from: s.srcProfile, sites: [site] })), site === "com" ? "bad_site" : "public_suffix", site);
+    assert.equal(await code(s.rooms.copyCookies("work", { from: s.srcProfile, sites: [site] })), site === "com" ? "bad_site" : "public_suffix", site);
   }
 });

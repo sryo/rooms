@@ -16,7 +16,7 @@ npm test
 ├── cdp.mjs          # CDP client with an allowlist of methods
 ├── view.mjs         # rooms view / rooms signin: the viewer page on host loopback
 ├── leases.mjs       # tab leases shared with perch
-├── teleport.mjs     # signin --from: copies cookies from Chrome
+├── cookies.mjs      # signin --from: copies cookies from Chrome
 ├── checkpoints.mjs  # snapshot save/restore/list/delete
 ├── events.mjs       # control/<name>/events.jsonl
 ├── image/           # the room's container image (Dockerfile, entrypoint, Chromium policies)

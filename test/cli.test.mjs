@@ -1,5 +1,5 @@
 // The command line as people and agents type it: each command reaches the right call, and the
-// older names keep working, since perch, figma-cdp and trabAGItos still print some of them.
+// older names keep working, since perch still prints `restore`.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { main, remedies } from "../rooms.mjs";
@@ -16,12 +16,13 @@ const run = async (argv, rooms = spy(), { tty = false } = {}) => {
   return { exit, lines, calls: rooms.calls };
 };
 
-test("signin --from copies the named sites' sessions from a browser; teleport still works", async () => {
-  const a = await run(["signin", "work", "--from", "chrome", "github.com", "linear.app"], spy({ teleport: { copied: 3 }, sites: [] }));
-  assert.deepEqual(a.calls[0], ["teleport", "work", { from: "chrome", sites: ["github.com", "linear.app"] }]);
+test("signin --from copies the named sites' sessions from a browser; teleport is no longer a command", async () => {
+  const a = await run(["signin", "work", "--from", "chrome", "github.com", "linear.app"], spy({ copyCookies: { copied: 3 }, sites: [] }));
+  assert.deepEqual(a.calls[0], ["copyCookies", "work", { from: "chrome", sites: ["github.com", "linear.app"] }]);
   assert.equal(a.exit, 0);
-  const b = await run(["teleport", "work", "--from", "canary", "--sites", "a.com,b.com"], spy({ teleport: { copied: 1 } }));
-  assert.deepEqual(b.calls[0], ["teleport", "work", { from: "canary", sites: ["a.com", "b.com"] }]);
+  const b = await run(["teleport", "work", "--from", "canary", "--sites", "a.com,b.com"]);
+  assert.deepEqual([b.exit, b.calls], [2, []]);
+  assert.doesNotMatch(b.lines.join("\n"), /teleport/);
 });
 
 test("the remedy for a signed-out site is the signin command", () => {
@@ -82,13 +83,13 @@ test("status --deep in a terminal prints one line per check, with its fix", asyn
 
 test("signin --from says it copied cookies only, then starts the room, checks it and names what still needs a sign-in", async () => {
   const check = [{ origin: "https://a.test", state: "signed_in" }, { origin: "https://b.test", state: "signed_out", remedy: "rooms signin work https://b.test/" }];
-  const rooms = spy({ teleport: { copied: 4, hosts: [".a.test", ".b.test"] }, sites: [{ origin: "https://a.test" }], up: { state: "up" }, check });
+  const rooms = spy({ copyCookies: { copied: 4, hosts: [".a.test", ".b.test"] }, sites: [{ origin: "https://a.test" }], up: { state: "up" }, check });
   const r = await run(["signin", "work", "--from", "chrome", "a.test", "b.test"], rooms, { tty: true });
-  assert.deepEqual(rooms.calls.map((c) => c[0]), ["teleport", "sites", "up", "check"]);
+  assert.deepEqual(rooms.calls.map((c) => c[0]), ["copyCookies", "sites", "up", "check"]);
   assert.match(r.lines.join("\n"), /cookies only/i);
   assert.match(r.lines.join("\n"), /still needs a sign-in: https:\/\/b\.test  -> rooms signin work https:\/\/b\.test\//);
   assert.equal(r.exit, 1);
-  const json = await run(["signin", "work", "--from", "chrome", "a.test"], spy({ teleport: { copied: 1 }, sites: [], up: { state: "up" } }));
+  const json = await run(["signin", "work", "--from", "chrome", "a.test"], spy({ copyCookies: { copied: 1 }, sites: [], up: { state: "up" } }));
   assert.deepEqual(JSON.parse(json.lines.join("")), { copied: 1, copiedOnly: "cookies" });
 });
 

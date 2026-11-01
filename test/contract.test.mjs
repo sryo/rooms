@@ -3,7 +3,7 @@
 // it fails here first. Fields may be added; none of these may move or change meaning.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { createRooms } from "../rooms.mjs";
 import { tmpHome, fakeRuntime, fakeFetch } from "./helpers.mjs";
@@ -66,4 +66,11 @@ test("run/ belongs to tools like perch (its tab leases live in run/leases); room
 test("the default signed-out path pattern is the one perch uses", async () => {
   const { DEFAULT_SIGNED_OUT } = await import("../rooms.mjs");
   assert.equal(DEFAULT_SIGNED_OUT, "(^|/)(login|log-in|signin|sign-in|sign_in|auth|session/new)([/?#]|$)");
+});
+
+test("AGENTS.md's layout names every module at the root", () => {
+  const root = new URL("..", import.meta.url).pathname;
+  const layout = readFileSync(join(root, "AGENTS.md"), "utf8");
+  const missing = readdirSync(root).filter((f) => f.endsWith(".mjs") && !layout.includes(`── ${f}`));
+  assert.deepEqual(missing, []);
 });
