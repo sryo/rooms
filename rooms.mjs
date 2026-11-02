@@ -302,12 +302,15 @@ export function createRooms({
     const reg = loadRaw();
     const room = reg.rooms[pending.name] ?? fail("rotation_pending_corrupt", `${pendingTokenFile} names a missing room; nothing was changed`);
     if (room.cdp.token !== pending.token) { room.cdp.token = pending.token; save(reg); }
-    const control = controlDir(pending.name);
+    writeToken(pending.name, pending.token);
+    rmSync(pendingTokenFile);
+  }
+  function writeToken(name, token) {
+    const control = controlDir(name);
     mkdirSync(control, { recursive: true, mode: 0o700 });
     const tmp = join(control, `token.${process.pid}.tmp`);
-    writeFileSync(tmp, pending.token + "\n", { mode: 0o600 });
+    writeFileSync(tmp, token + "\n", { mode: 0o600 });
     renameSync(tmp, join(control, "token"));
-    rmSync(pendingTokenFile);
   }
   async function withRegistryLock(fn) {
     const lock = await acquireFileLock(join(home, "run", "registry.lock.sqlite"), { waitMs: 10000 });
@@ -380,9 +383,14 @@ async function startRoom(name, { timeoutMs = 60000, image: override } = {}) {
     mkdirSync(join(home, "run"), { recursive: true, mode: 0o700 });
     const downloads = join(home, "downloads", name);
     mkdirSync(downloads, { recursive: true, mode: 0o700 });
-    writeFileSync(envFile, `ROOMS_TOKEN=${room.cdp.token}\n`, { mode: 0o600 });
+    // Rotation and start write the mounted token in the same registry transaction.
+    const token = await withRegistryLock(() => {
+      const current = loadRaw().rooms[name]?.cdp.token ?? fail("room_unknown", `no room '${name}'`);
+      writeToken(name, current);
+      return current;
+    });
+    writeFileSync(envFile, `ROOMS_TOKEN=${token}\n`, { mode: 0o600 });
     chmodSync(envFile, 0o600);
-    writeFileSync(join(control, "token"), room.cdp.token + "\n", { mode: 0o600 });
 
     const r = runtime.exec([
       "run", "--detach",
