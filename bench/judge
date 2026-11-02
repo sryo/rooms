@@ -1,0 +1,8 @@
+test/*
+test/contract.test.mjs
+test/leases.test.mjs
+test/fixtures/leases.json
+test/helpers.mjs
+test/fake-cdp.mjs
+bench/*
+package.json

@@ -22,6 +22,7 @@ A change is done when `fium done` says so: it runs every How we know row of GOAL
 ├── cookies.mjs      # signin --from: copies cookies from Chrome
 ├── checkpoints.mjs  # snapshot save/restore/list/delete
 ├── events.mjs       # control/<name>/events.jsonl
+├── bench/           # run.mjs: what an up and a check cost, counted with the test fakes; judge, baseline
 ├── image/           # the room's container image (Dockerfile, entrypoint, Chromium policies)
 └── test/            # node:test, no container needed; each file opens with what it pins
 ```
