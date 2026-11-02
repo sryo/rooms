@@ -20,15 +20,16 @@ When two goals conflict, the higher one wins.
 5. **Quick to start.** `rooms up` answers CDP in a few seconds.
 
 ## How we know
-| Goal | Metric | Where |
-|---|---|---|
-| 1 | sites signed in after down/up, crash and update; update rollback on a lost sign-in | `rooms check <name>`, `test/update.test.mjs`, `test/sites.test.mjs` (down flushes cookies), `test/rooms.test.mjs` (profile_newer) |
-| 2 | no stop or move while a lease is held or the room was used in the last hour | `test/update.test.mjs`, `test/rooms.test.mjs` (idle stop and held tabs), `test/leases.test.mjs` |
-| 3 | days the image is behind; restart and update failures | `rooms status <name> --deep` (image, container), `test/update.test.mjs`, `test/rooms.test.mjs` |
-| 4 | room memory against the 80% cap; profile size | `test/rooms.test.mjs` (the 80% check), manual (`du -sh ~/.rooms/profiles/<name>`) |
-| 5 | median ms from `rooms up` to CDP, over the last 10 ups | `rooms logs <name> --up-ms` (each `up` event logs `ms`) |
+| Goal | Metric | Where | Run |
+|---|---|---|---|
+| 1 | sites signed in after down/up, crash and update; update rollback on a lost sign-in | `rooms check <name>`, `test/update.test.mjs`, `test/sites.test.mjs` (down flushes cookies), `test/rooms.test.mjs` (profile_newer) | `npm test` |
+| 2 | no stop or move while a lease is held or the room was used in the last hour | `test/update.test.mjs`, `test/rooms.test.mjs` (idle stop and held tabs), `test/leases.test.mjs` | `npm test` |
+| 3 | days the image is behind; restart and update failures | `rooms status <name> --deep` (image, container), `test/update.test.mjs`, `test/rooms.test.mjs` | live: `node rooms.mjs status main --deep` |
+| 4 | room memory against the 80% cap | `test/rooms.test.mjs` (the 80% check) | `npm test` |
+| 4 | profile size, KB | `du -sk ~/.rooms/profiles/<name>` | live: `du -sk ~/.rooms/profiles/main` |
+| 5 | median ms from `rooms up` to CDP, over the last 10 ups | `rooms logs <name> --up-ms` (each `up` event logs `ms`) | live: `node rooms.mjs logs main --up-ms \| python3 -c "import json,sys; print(json.load(sys.stdin)['medianMs'])"` |
 
-Caps: `q3 k2 n2 b2 t1` (how firm each kind of number is: 3 never grows, 2 needs the owner's price, 1 may grow 10%, 0 only reported; fium RULES.md K6)
+Caps: `q3 k2 n2 b2 t1` (how firm each kind of number is: 3 hard, must end the same or better; 2 semi-hard, past its margin you choose; 1 semi-hard with a 10% margin; 0 soft, no limit; fium RULES.md K6)
 
 ## Non-goals
 - Running anywhere but this Mac: no hosted rooms, no sharing a room between machines.

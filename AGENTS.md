@@ -7,6 +7,8 @@ How rooms is built and how to work on it. fium rules are in ~/Documents/fium/RUL
 npm test
 ```
 
+A change is done when `fium done` says so: it runs every How we know row of GOALS.md where the change started and now, and shows each number under its goal.
+
 ## Layout
 
 ```
