@@ -106,6 +106,23 @@ test("a room moves to a new build only once nothing has used it for an hour, and
   assert.ok((await rooms.events("work")).some((e) => e.event === "updated"));
 });
 
+test("a room moving to a new build gives way to a down that lands meanwhile, and isn't rolled back", async () => {
+  const { home, runtime, rooms, notes } = setup({ idle: 61 * 60000 });
+  await rooms.init("work");
+  await rooms.up("work");
+  runtime.images.set("rooms-chrome:latest", { digest: "sha256:v2", version: "156.0.8078.80" });
+  const exec = runtime.exec.bind(runtime);
+  // The down lands once the move has stopped the room and before it starts it again.
+  runtime.exec = (argv) => { const r = exec(argv); if (argv[0] === "delete") writeFileSync(join(home, "control", "work", "stop"), ""); return r; };
+  const r = await rooms.heartbeat("work");
+  assert.equal(r.state, "down");
+  assert.equal(runtime.containers.has("rooms-work"), false);
+  assert.equal(runtime.calls.filter((c) => c[0] === "run").length, 1, "not started again");
+  const events = (await rooms.events("work")).map((e) => e.event);
+  assert.ok(!events.includes("update-rolled-back") && !events.includes("updated"), events.join(","));
+  assert.deepEqual(notes, []);
+});
+
 test("a room isn't moved while one of its tabs is held", async () => {
   const { home, runtime, rooms } = setup({ idle: 2 * 3600000 });
   await rooms.init("work");

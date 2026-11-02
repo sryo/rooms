@@ -247,6 +247,8 @@ export function createRooms({
   const watcherFile = (name) => join(controlDir(name), "watcher.json");
   // A crashed room the watcher couldn't bring back: {failures, retryAt, error}. down removes it.
   const restartFile = (name) => join(controlDir(name), "restart.json");
+  const lifecycleLock = (name) => join(controlDir(name), "up.lock.sqlite");
+  const downLock = (name) => join(controlDir(name), "down.lock.sqlite");
   // The image build a room was moved back from, so it isn't tried again: {skip: digest}.
   const updateFile = (name) => join(controlDir(name), "update.json");
   const updateState = join(home, "run", "update.json");
@@ -302,12 +304,30 @@ export function createRooms({
     const reg = loadRaw();
     const room = reg.rooms[pending.name] ?? fail("rotation_pending_corrupt", `${pendingTokenFile} names a missing room; nothing was changed`);
     if (room.cdp.token !== pending.token) { room.cdp.token = pending.token; save(reg); }
-    const control = controlDir(pending.name);
+    writeToken(pending.name, pending.token);
+    rmSync(pendingTokenFile);
+  }
+  function writeToken(name, token) {
+    const control = controlDir(name);
     mkdirSync(control, { recursive: true, mode: 0o700 });
     const tmp = join(control, `token.${process.pid}.tmp`);
-    writeFileSync(tmp, pending.token + "\n", { mode: 0o600 });
+    writeFileSync(tmp, token + "\n", { mode: 0o600 });
     renameSync(tmp, join(control, "token"));
-    rmSync(pendingTokenFile);
+  }
+  // Starts, restarts and stops of one room take turns under its lifecycle lock. A deliberate down is
+  // final: control/<name>/stop records it, and
+  // - each down holds the down lock shared from before it writes stop until it has stopped the room;
+  // - only a deliberate up removes stop, holding the lifecycle lock and the down lock exclusively, so
+  //   never while a down is under way;
+  // - every start holds the lifecycle lock and gives way once stop exists: before container run, and
+  //   at each probe, stopping what it ran; nothing else that holds it starts the room.
+  // So once stop is written, each holder of the lifecycle lock leaves the room down, and a down waits
+  // at most for the step a holder is in. A dead process releases the SQLite locks itself.
+  async function withLifecycleLock(name, fn, { waitMs = 0, busy = `another rooms command is starting or stopping ${name}; wait for it` } = {}) {
+    const lock = await acquireFileLock(lifecycleLock(name), { waitMs });
+    if (!lock) fail("room_busy", busy);
+    try { return await fn(); }
+    finally { lock.release(); }
   }
   async function withRegistryLock(fn) {
     const lock = await acquireFileLock(join(home, "run", "registry.lock.sqlite"), { waitMs: 10000 });
@@ -371,7 +391,6 @@ async function startRoom(name, { timeoutMs = 60000, image: override } = {}) {
     for (const m of LEGACY_MARKERS) rmSync(join(room.profile, m), { force: true }); // a link is removed, not followed
     const control = controlDir(name);
     mkdirSync(control, { recursive: true, mode: 0o700 });
-    rmSync(stopFile(name), { force: true });
     const flags = chromeFlags(room.flags ?? []);
     if (flags.length) writeFileSync(join(control, "flags"), flags.join("\n") + "\n", { mode: 0o600 });
     else rmSync(join(control, "flags"), { force: true });
@@ -380,9 +399,16 @@ async function startRoom(name, { timeoutMs = 60000, image: override } = {}) {
     mkdirSync(join(home, "run"), { recursive: true, mode: 0o700 });
     const downloads = join(home, "downloads", name);
     mkdirSync(downloads, { recursive: true, mode: 0o700 });
-    writeFileSync(envFile, `ROOMS_TOKEN=${room.cdp.token}\n`, { mode: 0o600 });
+    // Read and written under the registry lock, so a rotation lands wholly before or after.
+    const token = await withRegistryLock(() => {
+      const t = loadRaw().rooms[name]?.cdp.token ?? fail("room_unknown", `no room '${name}'`);
+      writeToken(name, t);
+      return t;
+    });
+    const stopping = () => existsSync(stopFile(name));
+    if (stopping()) fail("room_stopping", `rooms down ${name} came while it was starting; it stays down`);
+    writeFileSync(envFile, `ROOMS_TOKEN=${token}\n`, { mode: 0o600 });
     chmodSync(envFile, 0o600);
-    writeFileSync(join(control, "token"), room.cdp.token + "\n", { mode: 0o600 });
 
     const r = runtime.exec([
       "run", "--detach",
@@ -413,6 +439,12 @@ async function startRoom(name, { timeoutMs = 60000, image: override } = {}) {
     const t0 = Date.now();
     let last;
     for (;;) {
+      // Chromium hasn't answered yet, so nothing was signed in that a clean close would flush.
+      if (stopping()) {
+        runtime.exec(["stop", cname]);
+        runtime.exec(["delete", cname]);
+        fail("room_stopping", `rooms down ${name} came while it was starting; stopped it, profile kept`);
+      }
       let v;
       try { v = await probe(name); } catch (e) { last = e; }
       if (v) {
@@ -428,6 +460,36 @@ async function startRoom(name, { timeoutMs = 60000, image: override } = {}) {
       }
       await sleep(500);
     }
+  }
+
+  // Stops and removes the room's container, with the lifecycle lock held. Chromium writes cookies to
+  // disk lazily (~30 s); a clean Browser.close flushes them, so a sign-in made just before survives.
+  async function stopRoom(name) {
+    const cname = containerName(name);
+    const state = containers().get(cname);
+    if (state === "running") {
+      try {
+        const cdp = await connect(await browserWsUrl(endpoint(name), fetch));
+        await cdp.send("Browser.close").catch(() => {});
+        cdp.close();
+        const t0 = Date.now();
+        while (Date.now() - t0 < 5000) { try { await probe(name); } catch { break; } await sleep(250); }
+      } catch {}
+      runtime.exec(["stop", "--time", "15", cname]);
+    }
+    if (state) runtime.exec(["delete", cname]);
+    rmSync(ownerFile(name), { force: true });
+    const awakeFile = join(home, "run", `${name}.awake`);
+    if (awake && existsSync(awakeFile)) { awake.stop(Number(readFileSync(awakeFile, "utf8"))); rmSync(awakeFile, { force: true }); }
+    return state;
+  }
+  // The rest of a deliberate down, once its stop is written.
+  async function finishDown(name) {
+    heartbeatFailures.delete(name);
+    const state = await stopRoom(name);
+    rmSync(restartFile(name), { force: true });
+    if (state) logEvent(name, "down", {});
+    return { name, state: "down" };
   }
 
   return {
@@ -456,49 +518,48 @@ async function startRoom(name, { timeoutMs = 60000, image: override } = {}) {
       });
     },
 
-    // One up at a time per room. A dead process releases the SQLite lock itself.
-    async up(name, opts) {
+    // unlessStopped is a start nobody asked for just now (autostart, an image move): it leaves a
+    // deliberately stopped room down.
+    async up(name, { unlessStopped = false, ...opts } = {}) {
       get(name);
-      const lock = await acquireFileLock(join(controlDir(name), "up.lock.sqlite"));
-      if (!lock) fail("room_busy", `another rooms up is starting ${name}; wait for it`);
-      try { return await startRoom(name, opts); }
-      finally { lock.release(); }
+      return withLifecycleLock(name, async () => {
+        if (unlessStopped) {
+          if (existsSync(stopFile(name))) return { name, state: "down", stopRequested: true };
+        } else {
+          const noDown = await acquireFileLock(downLock(name));
+          if (!noDown) fail("room_stopping", `rooms down is stopping ${name}; rooms up ${name} again once it is down`);
+          try { rmSync(stopFile(name), { force: true }); } finally { noDown.release(); }
+        }
+        return startRoom(name, opts);
+      });
     },
 
+    // The stop also tells the guest supervisor Browser.close is deliberate. If the wait runs out, the
+    // stop stays and whatever holds the lifecycle lock leaves the room down.
     async down(name) {
-      const room = get(name);
-      heartbeatFailures.delete(name);
-      const cname = containerName(name);
-      const state = containers().get(cname);
-      if (state === "running") {
-        // Tell the guest supervisor that Browser.close is deliberate before sending it.
+      get(name);
+      const pending = await acquireFileLock(downLock(name), { shared: true, waitMs: 10000 });
+      if (!pending) fail("room_busy", `rooms up is starting ${name}; rooms down ${name} again`);
+      try {
         mkdirSync(controlDir(name), { recursive: true, mode: 0o700 });
         writeFileSync(stopFile(name), "", { mode: 0o600 });
-        // Chromium writes cookies to disk lazily (~30 s); a clean Browser.close flushes them, so a
-        // sign-in made just before `down` survives. Best effort: the stop below still runs.
-        try {
-          const cdp = await connect(await browserWsUrl(endpoint(name), fetch));
-          await cdp.send("Browser.close").catch(() => {});
-          cdp.close();
-          const t0 = Date.now();
-          while (Date.now() - t0 < 5000) { try { await probe(name); } catch { break; } await sleep(250); }
-        } catch {}
-        runtime.exec(["stop", "--time", "15", cname]);
-      }
-      if (state) runtime.exec(["delete", cname]);
-      rmSync(ownerFile(name), { force: true });
-      const awakeFile = join(home, "run", `${name}.awake`);
-      if (awake && existsSync(awakeFile)) { awake.stop(Number(readFileSync(awakeFile, "utf8"))); rmSync(awakeFile, { force: true }); }
-      rmSync(restartFile(name), { force: true });
-      if (state) logEvent(name, "down", {});
-      return { name, state: "down" };
+        return await withLifecycleLock(name, () => finishDown(name), { waitMs: 30000, busy: `${name} is still busy after 30 s; its stop is recorded, so it ends down` });
+      } finally { pending.release(); }
     },
 
     async heartbeat(name, { after = 3 } = {}) {
       const room = get(name);
       if (!Number.isInteger(after) || after < 1) fail("bad_args", "heartbeat after must be a positive integer");
       if (!runtime.available()) fail("runtime_missing", "Apple's `container` CLI isn't available");
-      if (containers().get(containerName(name)) !== "running") {
+      const running = containers().get(containerName(name)) === "running";
+      // Up with its stop written: a down died before it stopped the room, or ran out of waiting.
+      if (running && existsSync(stopFile(name))) {
+        const lock = await acquireFileLock(lifecycleLock(name));
+        if (!lock) return { name, state: "stopping" };
+        try { if (existsSync(stopFile(name))) return await finishDown(name); }
+        finally { lock.release(); }
+      }
+      if (!running) {
         heartbeatFailures.delete(name);
         const pending = readJson(restartFile(name));
         if (!pending) return { name, state: "down", failures: 0 };
@@ -542,21 +603,26 @@ async function startRoom(name, { timeoutMs = 60000, image: override } = {}) {
       heartbeatFailures.set(name, failures);
       if (failures < after) return { name, state: "unhealthy", failures };
       logEvent(name, "crashed", { failures });
-      await this.down(name);
-      return this.restart(name, null);
+      return this.restart(name, null, { crashed: true });
     },
 
     // Moves a room onto the image's current build behind a checkpoint. If it doesn't come up, or a
     // site signed in at its last check is signed out after, the checkpoint and the previous build
     // come back, and that build isn't tried again.
+    // A down that comes meanwhile wins: the room stays down, on whichever build it was stopped from.
     async moveToImage(name, target) {
       const room = get(name);
       const before = readEvents(eventsFile(name)).filter((e) => e.event === "check").at(-1)?.sites ?? {};
-      await this.down(name);
+      const stop = () => withLifecycleLock(name, () => stopRoom(name), { waitMs: 30000 });
+      const start = async (opts) => {
+        try { return (await this.up(name, { unlessStopped: true, ...opts })).state === "up"; }
+        catch (e) { if (e.code === "room_stopping") return false; throw e; }
+      };
+      await stop();
       const id = `pre-update-${new Date(now()).toISOString().replace(/\D/g, "").slice(0, 14)}`;
       await this.checkpoint(name, id);
       let problem;
-      try { await this.up(name); } catch (e) { problem = `didn't start (${e.message})`; }
+      try { if (!await start()) return { name, state: "down", checkpoint: id }; } catch (e) { problem = `didn't start (${e.message})`; }
       if (!problem && (room.sites ?? []).length) {
         const after = await this.check(name).catch(() => []);
         const lost = after.filter((s) => s.state === "signed_out" && before[s.origin] === "signed_in").map((s) => s.origin);
@@ -568,14 +634,14 @@ async function startRoom(name, { timeoutMs = 60000, image: override } = {}) {
         for (const c of old) await this.prune(name, c.id);
         return { name, state: "updated", checkpoint: id };
       }
-      await this.down(name);
+      await stop();
       await this.restore(name, id);
       mkdirSync(controlDir(name), { recursive: true, mode: 0o700 });
       writeFileSync(updateFile(name), JSON.stringify({ skip: target }) + "\n", { mode: 0o600 });
       logEvent(name, "update-rolled-back", { image: target, problem });
       notify?.("rooms", `${name} stayed on its previous build: the new one ${problem}`);
       const previous = imageTag("previous");
-      await this.up(name, runtime.imageInfo?.(previous) ? { image: previous } : undefined);
+      await start(runtime.imageInfo?.(previous) ? { image: previous } : undefined);
       return { name, state: "rolled_back", problem, checkpoint: id };
     },
 
@@ -614,14 +680,22 @@ async function startRoom(name, { timeoutMs = 60000, image: override } = {}) {
 
     // Brings a crashed room back. On failure the next try waits twice as long (1 min up to 30), and
     // the user is told once, then again when it is back.
-    async restart(name, pending) {
+    // The retry is recorded under the lifecycle lock and only while no stop is written, so a down
+    // removes it or leaves nothing to retry. A crashed room is stopped first, under the same hold.
+    async restart(name, pending, { crashed = false } = {}) {
       const room = get(name);
+      const lock = await acquireFileLock(lifecycleLock(name));
+      if (!lock) return { name, state: "busy" };
+      const stopped = () => existsSync(stopFile(name)) || (pending && !existsSync(restartFile(name)));
       try {
-        await this.up(name);
+        if (stopped()) return { name, state: "down" };
+        if (crashed) await stopRoom(name);
+        await startRoom(name);
         rmSync(restartFile(name), { force: true });
         if (pending) notify?.("rooms", `${name} is back up`);
         return { name, state: "restarted", profile: room.profile, failures: 0 };
       } catch (e) {
+        if (e.code === "room_stopping" || stopped()) return { name, state: "down" };
         const failures = (pending?.failures ?? 0) + 1;
         const retryAt = new Date(now() + Math.min(30, 2 ** (failures - 1)) * 60000).toISOString();
         mkdirSync(controlDir(name), { recursive: true, mode: 0o700 });
@@ -629,7 +703,7 @@ async function startRoom(name, { timeoutMs = 60000, image: override } = {}) {
         logEvent(name, "restart-failed", { failures, error: e.message });
         if (failures === 1) notify?.("rooms", `${name} could not restart: ${e.message}. Retrying; rooms status ${name} --deep says more`);
         return { name, state: "restart_failed", retryAt, error: e.message };
-      }
+      } finally { lock.release(); }
     },
 
     // Each check: {id, status: pass|warn|fail|skip, severity: required|recommended|info, remedy?}.
@@ -1012,7 +1086,7 @@ export async function main(argv, rooms = createRooms({ awake: macAwake, excludeF
         if (!claim.claimed) { print({ name, state: "watched", by: claim.pid }); return 0; }
         if (argv.includes("--start")) {
           const d = await rooms.doctor(name);
-          if (d.code === "room_down" && !d.stopRequested) await rooms.up(name);
+          if (d.code === "room_down") await rooms.up(name, { unlessStopped: true });
         }
         let stopped = false, last = null;
         const stop = () => { stopped = true; };
