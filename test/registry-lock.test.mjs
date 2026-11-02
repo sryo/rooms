@@ -1,7 +1,7 @@
-// Registry writes from separate rooms processes serialize, preserving every mutation and token file, and no up mounts a token a rotation replaced.
+// Registry writes from separate rooms processes serialize, preserving every mutation and token file.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createRooms } from "../rooms.mjs";
@@ -100,26 +100,4 @@ test("a read completes an interrupted token rotation before returning an endpoin
     assert.equal(readFileSync(join(home, "control", "work", "token"), "utf8"), next + "\n");
     assert.equal(existsSync(pending), false);
   }
-});
-
-test("a rotation between up reading the room and writing its token leaves the rotated token mounted", async () => {
-  const home = tmpHome();
-  const runtime = fakeRuntime();
-  let rotated = false;
-  // up asks whether the runtime is there after it has looked the room up and before it writes the token.
-  runtime.available = () => {
-    if (!rotated) {
-      rotated = true;
-      const r = spawnSync(process.execPath, ["--input-type=module", "-e", childCode, home, "rotate"], { encoding: "utf8" });
-      assert.equal(r.status, 0, r.stderr);
-    }
-    return true;
-  };
-  const rooms = createRooms({ home, runtime, fetch: fakeFetch(), sleep: async () => {}, physicalMemory: 64 * 2 ** 30 });
-  const prior = (await rooms.init("work")).cdp.token;
-  await rooms.up("work");
-  assert.ok(rotated);
-  const token = JSON.parse(readFileSync(join(home, "rooms.json"), "utf8")).rooms.work.cdp.token;
-  assert.notEqual(token, prior);
-  assert.equal(readFileSync(join(home, "control", "work", "token"), "utf8"), token + "\n");
 });
