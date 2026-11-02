@@ -1,0 +1,27 @@
+{
+ "commit": "52fea12256204b74d44be0357113ad921efc6bad",
+ "dirty": false,
+ "metrics": {
+  "up exec calls": {
+   "dir": "lower",
+   "kind": "count",
+   "samples": [
+    3
+   ]
+  },
+  "check cdp calls": {
+   "dir": "lower",
+   "kind": "count",
+   "samples": [
+    27
+   ]
+  },
+  "loc": {
+   "dir": "lower",
+   "kind": "loc",
+   "samples": [
+    1729
+   ]
+  }
+ }
+}
