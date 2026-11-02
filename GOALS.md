@@ -30,7 +30,7 @@ When two goals conflict, the higher one wins.
 | 4 | container exec calls per `rooms up`, CDP calls per `rooms check` of three sites, lines of code | `bench/run.mjs` (the test fakes, no container or browser) | `node bench/run.mjs` |
 | 5 | median ms from `rooms up` to CDP, over the last 10 ups | `rooms logs <name> --up-ms` (each `up` event logs `ms`) | live: `node rooms.mjs logs main --up-ms \| python3 -c "import json,sys; print(json.load(sys.stdin)['medianMs'])"` |
 
-Caps: `q3 k2 n2 b2 t1` (how firm each kind of number is: 3 hard, must end the same or better; 2 semi-hard, past its margin you choose; 1 semi-hard with a 10% margin; 0 soft, no limit; fium RULES.md K6)
+Caps: `all=ask quality=hard time=ask+10%`
 
 ## Non-goals
 - Running anywhere but this Mac: no hosted rooms, no sharing a room between machines.
