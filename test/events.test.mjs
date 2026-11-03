@@ -91,8 +91,10 @@ test("the watcher logs a restart after a crash and an idle stop", async () => {
   assert.ok(names.indexOf("crashed") < names.lastIndexOf("up"));
 });
 
+// control/<name>/viewing/<targetId>.json marks the tab the user holds; perch refuses it to agents.
+const viewing = (home, targetId) => { try { return JSON.parse(readFileSync(join(home, "control", "work", "viewing", `${targetId}.json`), "utf8")); } catch { return null; } };
+
 test("while the viewer is open the user holds its tab; signin logs handoff.started, then handoff.ended once signed in", async () => {
-  const { leaseHolder } = await import("../leases.mjs");
   const { home, rooms } = make();
   await rooms.init("work");
   await rooms.up("work");
@@ -101,14 +103,14 @@ test("while the viewer is open the user holds its tab; signin logs handoff.start
   const viewer = async (name, opts) => { signedIn = opts.onSignedIn; return { url: "http://127.0.0.1:1/v/x/", targetId: "T9", close: () => { closed = true; } }; };
   const running = main(["signin", "work", "https://app.a.test/home", "--no-open"], rooms, () => {}, { tty: false, viewer, untilClosed: () => new Promise((r) => { closeViewer = r; }) });
   while (!closeViewer) await new Promise((r) => setTimeout(r, 5));
-  assert.deepEqual(leaseHolder(home, "room:work:T9"), { owner: "user", pid: process.pid });
+  assert.equal(viewing(home, "T9").pid, process.pid);
   let names = (await rooms.events("work")).map((e) => e.event);
   assert.equal(names.at(-1), "handoff.started");
   assert.equal((await rooms.events("work")).at(-1).origin, "https://app.a.test");
   await signedIn("https://app.a.test/dashboard");
   const ended = (await rooms.events("work")).at(-1);
   assert.deepEqual([ended.event, ended.reason, ended.tab], ["handoff.ended", "signed_in", "room:work:T9"]);
-  assert.equal(leaseHolder(home, "room:work:T9"), null, "agents get the tab back once signed in");
+  assert.equal(viewing(home, "T9"), null, "agents get the tab back once signed in");
   closeViewer();
   assert.equal(await running, 0);
   assert.ok(closed);
@@ -117,7 +119,6 @@ test("while the viewer is open the user holds its tab; signin logs handoff.start
 });
 
 test("a plain view also holds the tab, and closing it ends the handoff", async () => {
-  const { leaseHolder } = await import("../leases.mjs");
   const { home, rooms } = make();
   await rooms.init("work");
   await rooms.up("work");
@@ -125,10 +126,10 @@ test("a plain view also holds the tab, and closing it ends the handoff", async (
   const viewer = async () => ({ url: "u", targetId: "T1", close: () => {} });
   const running = main(["view", "work", "--no-open"], rooms, () => {}, { tty: false, viewer, untilClosed: () => new Promise((r) => { closeViewer = r; }) });
   while (!closeViewer) await new Promise((r) => setTimeout(r, 5));
-  assert.equal(leaseHolder(home, "room:work:T1").owner, "user");
+  assert.equal(viewing(home, "T1").pid, process.pid);
   closeViewer();
   await running;
-  assert.equal(leaseHolder(home, "room:work:T1"), null);
+  assert.equal(viewing(home, "T1"), null);
   const last = (await rooms.events("work")).at(-1);
   assert.deepEqual([last.event, last.reason], ["handoff.ended", "closed"]);
 });

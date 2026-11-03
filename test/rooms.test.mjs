@@ -628,15 +628,30 @@ test("rotate gives the room a new token without restarting it, so nothing has to
   assert.equal((await rooms.events("work")).at(-1).event, "token-rotated");
 });
 
-test("an idle room isn't stopped while someone holds one of its tabs: an agent mid-call, or the user in the viewer", async () => {
-  const { holdForUser } = await import("../leases.mjs");
+test("a viewer's mark held by a dead process holds nothing, and a release leaves a newer mark alone", async () => {
+  const fetch = async (url) => ({ ok: true, status: 200, json: async () => (url.endsWith("/rooms/activity") ? { idleMs: 3600000 } : { Browser: "Chromium/150.0" }) });
+  const home = tmpHome();
+  const rooms = createRooms({ home, runtime: fakeRuntime(), fetch, sleep: async () => {}, physicalMemory: 64 * 2 ** 30, connect: async () => { throw new Error("no cdp"); } });
+  await rooms.init("work");
+  await rooms.set("work", { idle: "30m" });
+  await rooms.up("work");
+  const dead = spawnSync(process.execPath, ["-e", ""]).pid;
+  const first = await rooms.holdTab("work", "T1", dead);
+  const second = await rooms.holdTab("work", "T1", dead);
+  first();
+  assert.ok(existsSync(join(home, "control", "work", "viewing", "T1.json")));
+  assert.equal((await rooms.heartbeat("work")).state, "stopped_idle");
+  second();
+});
+
+test("an idle room isn't stopped while the user has one of its tabs in the viewer", async () => {
   const fetch = async (url) => ({ ok: true, status: 200, json: async () => (url.endsWith("/rooms/activity") ? { idleMs: 3600000 } : url.endsWith("/json/list") ? [{ id: "T1", type: "page" }] : { Browser: "Chromium/150.0" }) });
   const home = tmpHome();
   const rooms = createRooms({ home, runtime: fakeRuntime(), fetch, sleep: async () => {}, physicalMemory: 64 * 2 ** 30, connect: async () => { throw new Error("no cdp"); } });
   await rooms.init("work");
   await rooms.set("work", { idle: "30m" });
   await rooms.up("work");
-  const release = await holdForUser(home, "room:work:T1");
+  const release = await rooms.holdTab("work", "T1");
   assert.deepEqual([(await rooms.heartbeat("work")).state, (await rooms.heartbeat("work")).heldBy], ["up", "user"]);
   await release();
   assert.equal((await rooms.heartbeat("work")).state, "stopped_idle");

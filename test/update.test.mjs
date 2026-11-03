@@ -106,16 +106,15 @@ test("a room moves to a new build only once nothing has used it for an hour, and
   assert.ok((await rooms.events("work")).some((e) => e.event === "updated"));
 });
 
-test("a room isn't moved while one of its tabs is held", async () => {
-  const { home, runtime, rooms } = setup({ idle: 2 * 3600000 });
+test("a room isn't moved while the user has one of its tabs in the viewer", async () => {
+  const { runtime, rooms } = setup({ idle: 2 * 3600000 });
   await rooms.init("work");
   await rooms.up("work");
-  const { holdForUser } = await import("../leases.mjs");
-  const release = await holdForUser(home, "room:work:T1");
+  const release = await rooms.holdTab("work", "T1");
   runtime.images.set("rooms-chrome:latest", { digest: "sha256:v2", version: "156.0.8078.80" });
   assert.equal((await rooms.heartbeat("work")).state, "up");
   assert.equal(runtime.containerImage("rooms-work"), "sha256:v1");
-  await release?.();
+  release();
 });
 
 test("a room whose sites sign out on the new build goes back to its checkpoint and the previous image, once", async () => {

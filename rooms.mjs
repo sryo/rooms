@@ -14,7 +14,6 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { connectCdp, browserWsUrl } from "./cdp.mjs";
 import { cloneFile as apfsClone, checkpointProfile, restoreProfile } from "./checkpoints.mjs";
 import { appendEvent, readEvents } from "./events.mjs";
-import { holdForUser, leaseHolder } from "./leases.mjs";
 import { acquireFileLock, acquireFileLockSync } from "./locks.mjs";
 
 export class RoomsError extends Error {
@@ -249,6 +248,9 @@ export function createRooms({
   const restartFile = (name) => join(controlDir(name), "restart.json");
   // The image build a room was moved back from, so it isn't tried again: {skip: digest}.
   const updateFile = (name) => join(controlDir(name), "update.json");
+  // control/<name>/viewing/<targetId>.json: a tab the user is watching or driving in the
+  // viewer, {pid, since, id}, for as long as that process lives. perch refuses it to agents.
+  const viewingFile = (name, targetId) => join(controlDir(name), "viewing", `${targetId}.json`);
   const updateState = join(home, "run", "update.json");
   const imageTag = (tag) => `${image.replace(/:[^:/]*$/, "")}:${tag}`;
   // An image's Chromium version, asked once per build: asking starts a container (about 0.8 s).
@@ -523,24 +525,22 @@ async function startRoom(name, { timeoutMs = 60000, image: override } = {}) {
           if (idle === undefined) { idle = null; try { const res = await fetch(`${endpoint(name)}/rooms/activity`, { signal: AbortSignal.timeout(3000) }); if (res.ok) idle = (await res.json()).idleMs; } catch {} }
           return idle > ms;
         };
-        // Nor while one of its tabs is held: an agent mid-call, or the user at the viewer.
-        const holder = async () => {
-          try {
-            const res = await fetch(`${endpoint(name)}/json/list`, { signal: AbortSignal.timeout(3000) });
-            const pages = res.ok ? await res.json() : [];
-            return pages.map((p) => leaseHolder(home, `room:${name}:${p.id}`)).find(Boolean)?.owner;
-          } catch { return undefined; }
+        // Nor while the user is at the viewer. An agent mid-call keeps the room from being quiet.
+        const holder = () => {
+          let files = [];
+          try { files = readdirSync(join(controlDir(name), "viewing")); } catch {}
+          return files.some((f) => alive(readJson(join(controlDir(name), "viewing", f))?.pid)) ? "user" : undefined;
         };
         // A newer build of the image is taken up once nothing has used the room for an hour.
         const target = runtime.imageInfo?.(image)?.digest, runs = target && runtime.containerImage?.(containerName(name));
         if (runs && runs !== target && readJson(updateFile(name))?.skip !== target && await quiet(UPDATE_QUIET_MS)) {
-          const heldBy = await holder();
+          const heldBy = holder();
           if (heldBy) return { name, state: "up", browser: v.Browser, failures: 0, heldBy };
           return this.moveToImage(name, target);
         }
         // Only a room given an idle limit is ever stopped for being idle; its tabs come back at the next up.
         if (room.idle && await quiet(idleMs(room.idle))) {
-          const heldBy = await holder();
+          const heldBy = holder();
           if (heldBy) return { name, state: "up", browser: v.Browser, failures: 0, heldBy };
           await this.down(name); logEvent(name, "idle-down", { idleMs: idle }); return { name, state: "stopped_idle", idleMs: idle };
         }
@@ -679,8 +679,16 @@ async function startRoom(name, { timeoutMs = 60000, image: override } = {}) {
       return { name, ok: !failed, code, ...(browser && { browser }), ...(cdpError && { error: cdpError }), ...(failed?.id === "container" && { stopRequested: failed.stopRequested }), profile: room.profile, checks };
     },
 
-    // The user's lease on a room tab while they watch or drive it; returns its release.
-    async holdTab(name, targetId) { get(name); return holdForUser(home, `room:${name}:${targetId}`); },
+    // Marks a room tab as the user's while they watch or drive it; returns its release, which
+    // removes the mark only while it is still this one.
+    async holdTab(name, targetId, pid = process.pid) {
+      get(name);
+      const path = viewingFile(name, targetId), mark = { pid, since: new Date().toISOString(), id: randomBytes(6).toString("hex") };
+      mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+      writeFileSync(`${path}.${mark.id}.tmp`, JSON.stringify(mark), { mode: 0o600 });
+      renameSync(`${path}.${mark.id}.tmp`, path);
+      return () => { if (readJson(path)?.id === mark.id) rmSync(path, { force: true }); };
+    },
 
     // A new token for the room. A running room's relay rereads it from control/<name>/token and
     // closes connections made with the old one; clients reconnect with the new one from rooms.json.

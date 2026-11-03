@@ -1,5 +1,5 @@
 // perch doesn't run the CLI: it reads rooms.json and the folders below directly. These pin what it
-// reads (perch/server.js roomRegistry, roomHandoff, the downloads path), so a change that would break
+// reads (perch/server.js roomRegistry, roomHandoff, roomViewing, the downloads path), so a change that would break
 // it fails here first. Fields may be added; none of these may move or change meaning.
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -59,6 +59,19 @@ test("run/ belongs to tools like perch (its tab leases live in run/leases); room
   await rooms.down("leases");
   assert.equal(existsSync(join(home, "run", "leases")), false);
   assert.ok(existsSync(join(home, "control", "leases", "stop")));
+});
+
+// perch reads it in withRoomLease and list_tabs: a tab named here, by a live pid, is the user's.
+test("control/<name>/viewing/<targetId>.json is {pid, since} while the user holds that tab, gone after", async () => {
+  const { home, rooms } = make();
+  await rooms.init("work");
+  const release = await rooms.holdTab("work", "T1");
+  const path = join(home, "control", "work", "viewing", "T1.json");
+  const v = JSON.parse(readFileSync(path, "utf8"));
+  assert.equal(v.pid, process.pid);
+  assert.ok(!Number.isNaN(Date.parse(v.since)));
+  release();
+  assert.equal(existsSync(path), false);
 });
 
 // perch spells this pattern too (ROOM_LOGIN_PATH in perch/server.js, pinned by its test/room.test.mjs);
