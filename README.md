@@ -1,3 +1,5 @@
+<img src="logo.svg" alt="rooms logo" width="128">
+
 # rooms
 
 rooms gives your AI agents their own browsers to work in, so they stop borrowing yours. A room is one Chromium on your Mac, set up for one job and kept signed in. You sign in to each site once, or copy a few sessions over from Chrome, and from then on your agent opens tabs, clicks and types there. A room runs out of sight and keeps working while your Mac is locked. It never moves your mouse or takes over your windows, and you can watch it and take over whenever you want. Nothing goes to the cloud.
