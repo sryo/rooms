@@ -1,4 +1,4 @@
-<img src="logo.svg" alt="rooms logo" width="128">
+<img src="logo.svg" alt="rooms" width="128">
 
 # rooms
 
