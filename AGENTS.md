@@ -22,6 +22,7 @@ A change is done when `fium done` says so: it runs every How we know row of GOAL
 ├── checkpoints.mjs  # snapshot save/restore/list/delete
 ├── events.mjs       # control/<name>/events.jsonl
 ├── bench/           # run.mjs: what an up and a check cost, counted with the test fakes; judge, baseline
+├── install.sh       # the one-command installer: container, clone to ~/.rooms/src, image build, npm link
 ├── image/           # the room's container image (Dockerfile, entrypoint, Chromium policies)
 └── test/            # node:test, no container needed; each file opens with what it pins
 ```
@@ -32,6 +33,7 @@ Tools read `~/.rooms` directly. `test/contract.test.mjs` pins what they may rely
 
 - `rooms.json`: `version` 1, and `rooms.<name>` with `cdp.host`, `cdp.port` and `cdp.token` (the relay takes the token as the first path segment or as a Bearer header) and `sites[]` with `origin`, `url` and `signedOut`, a path pattern for a signed-out page.
 - `downloads/<name>/` is the room's `/downloads`.
+- `src/` is install.sh's checkout of rooms (`ROOMS_DIR` moves it); rooms doesn't read or write it.
 - `run/leases/` and `run/claims/` are perch's own; rooms doesn't read or write them.
 - `control/<name>/viewing/<targetId>.json` is `{pid, since}` while the user watches or drives that tab in the viewer; perch refuses the tab to agents while that pid lives. It goes when the viewer closes or the site signs in.
 - `control/<name>/` is otherwise rooms' own: `token`, `events.jsonl` (one `{at, event, …}` per line, capped, the older half in `events.jsonl.1`), `owner.json` (who started the room, and when) and `watcher.json`.
