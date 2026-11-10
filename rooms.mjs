@@ -20,6 +20,9 @@ export class RoomsError extends Error {
   constructor(code, message) { super(`${code}: ${message}`); this.code = code; }
 }
 const fail = (code, message) => { throw new RoomsError(code, message); };
+// Homebrew's node lives under Cellar/<version>, which an upgrade removes; its opt/
+// link follows the upgrade, so a login agent keeps starting.
+export const stableNode = (p) => String(p).replace(/^(.*)\/Cellar\/(node(?:@[^/]+)?)\/[^/]+\/bin\/node$/, "$1/opt/$2/bin/node");
 
 const NAME = /^[a-z][a-z0-9-]{0,30}$/;
 const GUEST_RELAY_PORT = 9223;
@@ -676,6 +679,11 @@ async function startRoom(name, { timeoutMs = 60000, image: override } = {}) {
         : days >= 30 ? { detail: `${image}'s packages are ${days} days old, so Chromium may lack security fixes`, remedy: "rooms update" }
         : null;
       add("image", "recommended", !browser ? "skip" : stale ? "warn" : "pass", stale ?? {});
+      // A login agent whose node is gone never starts, and launchd says nothing.
+      let agentNode = null;
+      try { agentNode = /<key>ProgramArguments<\/key><array><string>([^<]*)<\/string>/.exec(readFileSync(agentFile(name), "utf8"))?.[1] ?? ""; } catch {}
+      const agentOk = agentNode == null || (agentNode && existsSync(agentNode.replaceAll("&amp;", "&")));
+      add("autostart", "recommended", agentNode == null ? "skip" : agentOk ? "pass" : "warn", agentOk ? {} : { detail: `its login agent runs ${agentNode}, which is gone, so it no longer starts at login`, remedy: `rooms autostart ${name} on` });
       const lastCheck = readEvents(eventsFile(name)).filter((e) => e.event === "check").at(-1);
       const notIn = lastCheck ? Object.entries(lastCheck.sites ?? {}).filter(([, st]) => st !== "signed_in").map(([o]) => o) : [];
       add("sites", "info", !(room.sites ?? []).length ? "skip" : !lastCheck || notIn.length ? "warn" : "pass", (room.sites ?? []).length && (!lastCheck || notIn.length) ? { detail: lastCheck ? `not signed in at the last check: ${notIn.join(", ")}` : "never checked", remedy: remedies.check(name) } : {});
@@ -733,7 +741,7 @@ async function startRoom(name, { timeoutMs = 60000, image: override } = {}) {
       const path = agentFile(name);
       if (!enabled) { rmSync(path, { force: true }); return { name, enabled: false, path }; }
       const esc = (s) => String(s).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
-      const args = [process.execPath, fileURLToPath(import.meta.url), "watch", name, "--start"];
+      const args = [stableNode(process.execPath), fileURLToPath(import.meta.url), "watch", name, "--start"];
       const plist = `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict>\n<key>Label</key><string>ai.perch.rooms.${esc(name)}</string>\n<key>ProgramArguments</key><array>${args.map((x) => `<string>${esc(x)}</string>`).join("")}</array>\n<key>RunAtLoad</key><true/>\n<key>KeepAlive</key><true/>\n</dict></plist>\n`;
       mkdirSync(launchAgents, { recursive: true, mode: 0o700 });
       writeFileSync(path, plist, { mode: 0o600 });

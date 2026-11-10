@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { existsSync, statSync, readFileSync, mkdirSync, rmSync, writeFileSync, copyFileSync, symlinkSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
-import { createRooms, RoomsError } from "../rooms.mjs";
+import { createRooms, RoomsError, stableNode } from "../rooms.mjs";
 import { acquireFileLock } from "../locks.mjs";
 import { tmpHome, fakeRuntime, fakeFetch } from "./helpers.mjs";
 
@@ -681,4 +681,20 @@ test("set size=WxH gives the room that window size, the same WxH loft takes; it 
   assert.deepEqual(flags.filter((f) => f.startsWith("--window-size")), ["--window-size=1280,800"]);
   assert.ok(flags.includes("--touch-events=enabled"), "the phone's other flags stay");
   for (const bad of ["1280,800", "big", "99x99", "12800x800"]) assert.equal(await code(() => rooms.set("m", { size: bad })), "bad_size", bad);
+});
+
+test("autostart names Homebrew's stable node, not the versioned one an upgrade removes; doctor flags an agent whose node is gone", async () => {
+  assert.equal(stableNode("/opt/homebrew/Cellar/node/26.8.2/bin/node"), "/opt/homebrew/opt/node/bin/node");
+  assert.equal(stableNode("/usr/local/Cellar/node@22/22.1.0/bin/node"), "/usr/local/opt/node@22/bin/node");
+  assert.equal(stableNode("/Users/x/.nvm/versions/node/v24/bin/node"), "/Users/x/.nvm/versions/node/v24/bin/node");
+  const home = tmpHome(), runtime = fakeRuntime();
+  const rooms = createRooms({ home, runtime, fetch: fakeFetch(), sleep: async () => {}, launchAgents: join(home, "LaunchAgents") });
+  await rooms.init("work");
+  assert.equal((await rooms.doctor("work")).checks.find((c) => c.id === "autostart").status, "skip");
+  const agent = await rooms.autostart("work");
+  assert.equal((await rooms.doctor("work")).checks.find((c) => c.id === "autostart").status, "pass");
+  writeFileSync(agent.path, readFileSync(agent.path, "utf8").replace(/<string>[^<]*node<\/string>/, "<string>/opt/homebrew/Cellar/node/0.0.1/bin/node</string>"));
+  const c = (await rooms.doctor("work")).checks.find((x) => x.id === "autostart");
+  assert.deepEqual([c.status, c.remedy], ["warn", "rooms autostart work on"]);
+  assert.match(c.detail, /\/opt\/homebrew\/Cellar\/node\/0\.0\.1\/bin\/node, which is gone/);
 });
