@@ -19,7 +19,7 @@ That copies those sites' cookies (only cookies: passwords and other site data st
 Set a room up while it's down, and before signing in, since a new user agent can sign sites out:
 - `rooms set work memory=6G` gives a heavy room more memory (3G by default).
 - `rooms set mobile device=phone` makes a room look like a phone; `device=desktop` undoes it. `rooms flags set` takes your own user agent, touch, scale and window size flags instead.
-- `rooms set work idle=30m` stops a room nobody has used for that long, while `autostart` is on. Its tabs come back when it starts again, as they do after any restart.
+- While `autostart` is on, a room nobody has used for an hour stops. `rooms set work idle=30m` changes how long, and `idle=off` keeps it up. Its tabs come back when it starts again, as they do after any restart.
 
 ## Also
 
