@@ -656,3 +656,14 @@ test("an idle room isn't stopped while the user has one of its tabs in the viewe
   await release();
   assert.equal((await rooms.heartbeat("work")).state, "stopped_idle");
 });
+
+test("set size=WxH gives the room that window size, the same WxH loft takes; it replaces the size a device or flags gave, keeping the rest", async () => {
+  const { rooms } = make();
+  await rooms.init("m");
+  await rooms.set("m", { device: "phone" });
+  assert.deepEqual(await rooms.set("m", { size: "1280x800" }), { name: "m", device: "phone", size: "1280x800" });
+  const flags = await rooms.flags("m");
+  assert.deepEqual(flags.filter((f) => f.startsWith("--window-size")), ["--window-size=1280,800"]);
+  assert.ok(flags.includes("--touch-events=enabled"), "the phone's other flags stay");
+  for (const bad of ["1280,800", "big", "99x99", "12800x800"]) assert.equal(await code(() => rooms.set("m", { size: bad })), "bad_size", bad);
+});

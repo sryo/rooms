@@ -18,7 +18,7 @@ That copies those sites' cookies (only cookies: passwords and other site data st
 
 Set a room up while it's down, and before signing in, since a new user agent can sign sites out:
 - `rooms set work memory=6G` gives a heavy room more memory (3G by default).
-- `rooms set mobile device=phone` makes a room look like a phone; `device=desktop` undoes it. `rooms flags set` takes your own user agent, touch, scale and window size flags instead.
+- `rooms set mobile device=phone` makes a room look like a phone; `device=desktop` undoes it. `rooms set mobile size=1280x800` sets its window size, written as loft writes it. `rooms flags set` takes your own user agent, touch, scale and window size flags instead.
 - `rooms set work idle=30m` stops a room nobody has used for that long, while `autostart` is on. Its tabs come back when it starts again, as they do after any restart.
 
 ## Also
@@ -28,7 +28,7 @@ Set a room up while it's down, and before signing in, since a new user agent can
 - `rooms rotate work` gives a room a new token without restarting it, so nothing signs out.
 - `rooms autostart work on` starts a room at every login, and restarts it when its browser stops answering. A room that stops, or that you `rooms down`, stays down. `off` undoes it. It also keeps the room patched: once a day it builds the image again, and when Chromium is newer the room moves to it the next time nothing has used it for an hour, behind a snapshot it goes back to if a site signs out. `rooms update` builds now.
 - `rooms snapshot save work <name>` snapshots a stopped room's profile. `rooms snapshot restore work <name>` brings it back after damage and keeps the profile it replaces; `snapshot list` shows both, and `snapshot delete` removes one.
-- Output is for people in a terminal, and JSON when piped or with `--json`.
+- Output is for people in a terminal, and JSON when piped or with `--json`, errors too (`{ok:false, code, error}`). `rooms status <name>` exits 3 when the room isn't up, as `loft status` does.
 - Older names (`list`, `doctor`, `checkpoint`, `restore`, `prune`, `view --signin`) still work.
 
 ## With perch
