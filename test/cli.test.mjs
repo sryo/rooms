@@ -112,3 +112,16 @@ test("exit 3 means not up, as loft's status does; --json errors are JSON on stdo
   assert.equal(j.exit, 1);
   assert.deepEqual(JSON.parse(j.lines.join("")), { ok: false, code: "room_unknown", error: "no room 'z'" });
 });
+
+test("run through a symlink (npm link's bin), the command still runs", async () => {
+  const { mkdtempSync, symlinkSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { spawnSync } = await import("node:child_process");
+  const { fileURLToPath } = await import("node:url");
+  const dir = mkdtempSync(join(tmpdir(), "rooms-bin-"));
+  const link = join(dir, "rooms");
+  symlinkSync(fileURLToPath(new URL("../rooms.mjs", import.meta.url)), link);
+  const r = spawnSync(process.execPath, [link], { encoding: "utf8" });
+  assert.match(r.stdout + r.stderr, /usage: rooms/);
+});

@@ -6,7 +6,7 @@
 // fresh profile behind the user's back (a fresh profile is a signed-out one).
 
 import { randomBytes, createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync, renameSync, chmodSync, rmSync, readdirSync, openSync, readSync, fstatSync, closeSync, constants as fsc } from "node:fs";
+import { existsSync, lstatSync, realpathSync, mkdirSync, readFileSync, writeFileSync, renameSync, chmodSync, rmSync, readdirSync, openSync, readSync, fstatSync, closeSync, constants as fsc } from "node:fs";
 import { homedir, totalmem } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
@@ -1130,4 +1130,5 @@ export async function main(argv, rooms = createRooms({ awake: macAwake, excludeF
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main(process.argv.slice(2)).then((c) => process.exit(c));
+// npm link runs this through a symlink, so the two paths match only once resolved.
+if (process.argv[1] && fileURLToPath(import.meta.url) === realpathSync(process.argv[1])) main(process.argv.slice(2)).then((c) => process.exit(c));
