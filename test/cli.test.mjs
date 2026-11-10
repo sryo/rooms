@@ -2,7 +2,7 @@
 // older names keep working, since perch still prints `restore`.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { main, remedies } from "../rooms.mjs";
+import { main, remedies, RoomsError } from "../rooms.mjs";
 
 // A rooms stand-in that records each call and answers with what the test gives it.
 function spy(answers = {}) {
@@ -50,7 +50,7 @@ test("status: every room, or one room with a nonzero exit unless it's up; --deep
   const all = await run(["status"], rooms());
   assert.deepEqual([all.calls[0][0], all.exit], ["list", 0]);
   assert.equal((await run(["status", "a"], rooms())).exit, 0);
-  assert.equal((await run(["status", "b"], rooms())).exit, 1);
+  assert.equal((await run(["status", "b"], rooms())).exit, 3);
   const deep = await run(["status", "b", "--deep"], rooms());
   assert.deepEqual([deep.calls[0], deep.exit], [["doctor", "b"], 1]);
   assert.equal((await run(["list"], rooms())).calls[0][0], "list");
@@ -102,4 +102,13 @@ test("check says until when each signed-in site stays signed in", async () => {
   assert.match(r.lines[0], /^signed in +https:\/\/github\.com +until 2026-12-01$/);
   assert.match(r.lines[1], /^signed in +https:\/\/linear\.app$/);
   assert.doesNotMatch(r.lines[2], /until/);
+});
+
+test("exit 3 means not up, as loft's status does; --json errors are JSON on stdout", async () => {
+  const rooms = () => spy({ status: (n) => ({ name: n, state: "down" }) });
+  assert.equal((await run(["status", "b"], rooms())).exit, 3);
+  const failing = { status: () => { throw new RoomsError("room_unknown", "no room 'z'"); } };
+  const j = await run(["status", "z", "--json"], failing, { tty: true });
+  assert.equal(j.exit, 1);
+  assert.deepEqual(JSON.parse(j.lines.join("")), { ok: false, code: "room_unknown", error: "no room 'z'" });
 });

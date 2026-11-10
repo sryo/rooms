@@ -120,6 +120,7 @@ test("a room isn't moved while the user has one of its tabs in the viewer", asyn
 test("a room whose sites sign out on the new build goes back to its checkpoint and the previous image, once", async () => {
   const { runtime, rooms, notes } = setup({ idle: 2 * 3600000 });
   await rooms.init("work");
+  await rooms.set("work", { idle: "off" }); // two idle hours would otherwise stop it
   await rooms.siteAdd("work", "https://a.test/");
   await rooms.up("work");
   await rooms.logEvent("work", "check", { sites: { "https://a.test": "signed_in" } });

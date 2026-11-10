@@ -474,7 +474,7 @@ test("set gives one room its own memory, used from its next up; the memory check
   assert.equal(await code(() => rooms.set("figma", { memory: "4G" })), "room_up");
 });
 
-test("a room with an idle limit is stopped by its watcher once no client has sent anything for that long; without one it stays up", async () => {
+test("a room with an idle limit is stopped by its watcher once no client has sent anything for that long; with idle=off it stays up", async () => {
   let idleMs = 0;
   const fetch = async (url) => ({ ok: true, status: 200, json: async () => (url.endsWith("/rooms/activity") ? { idleMs } : { Browser: "Chromium/150.0" }) });
   const home = tmpHome(), runtime = fakeRuntime();
@@ -483,6 +483,7 @@ test("a room with an idle limit is stopped by its watcher once no client has sen
   await rooms.init("always");
   assert.equal(await code(() => rooms.set("work", { idle: "soon" })), "bad_idle");
   assert.deepEqual(await rooms.set("work", { idle: "30m" }), { name: "work", idle: "30m" });
+  assert.deepEqual(await rooms.set("always", { idle: "off" }), { name: "always", idle: "off" });
   await rooms.up("work");
   await rooms.up("always");
   idleMs = 29 * 60000;
@@ -492,6 +493,20 @@ test("a room with an idle limit is stopped by its watcher once no client has sen
   assert.equal((await rooms.heartbeat("work")).state, "stopped_idle");
   assert.equal((await rooms.status("work")).state, "down");
   assert.equal((await rooms.doctor("work")).stopRequested, true, "an idle stop is deliberate: autostart won't bring it back");
+});
+
+test("a room with no idle setting stops after an hour nothing has used it", async () => {
+  let idleMs = 0;
+  const fetch = async (url) => ({ ok: true, status: 200, json: async () => (url.endsWith("/rooms/activity") ? { idleMs } : { Browser: "Chromium/150.0" }) });
+  const home = tmpHome(), runtime = fakeRuntime();
+  const rooms = createRooms({ home, runtime, fetch, sleep: async () => {}, physicalMemory: 64 * 2 ** 30, connect: async () => { throw new Error("no cdp"); } });
+  await rooms.init("work");
+  await rooms.up("work");
+  idleMs = 59 * 60000;
+  assert.equal((await rooms.heartbeat("work")).state, "up");
+  idleMs = 61 * 60000;
+  assert.equal((await rooms.heartbeat("work")).state, "stopped_idle");
+  assert.equal((await rooms.status("work")).state, "down");
 });
 
 test("set device=phone gives the room a phone's flags and device=desktop clears them; custom flags replace the preset", async () => {
@@ -655,4 +670,15 @@ test("an idle room isn't stopped while the user has one of its tabs in the viewe
   assert.deepEqual([(await rooms.heartbeat("work")).state, (await rooms.heartbeat("work")).heldBy], ["up", "user"]);
   await release();
   assert.equal((await rooms.heartbeat("work")).state, "stopped_idle");
+});
+
+test("set size=WxH gives the room that window size, the same WxH loft takes; it replaces the size a device or flags gave, keeping the rest", async () => {
+  const { rooms } = make();
+  await rooms.init("m");
+  await rooms.set("m", { device: "phone" });
+  assert.deepEqual(await rooms.set("m", { size: "1280x800" }), { name: "m", device: "phone", size: "1280x800" });
+  const flags = await rooms.flags("m");
+  assert.deepEqual(flags.filter((f) => f.startsWith("--window-size")), ["--window-size=1280,800"]);
+  assert.ok(flags.includes("--touch-events=enabled"), "the phone's other flags stay");
+  for (const bad of ["1280,800", "big", "99x99", "12800x800"]) assert.equal(await code(() => rooms.set("m", { size: bad })), "bad_size", bad);
 });
