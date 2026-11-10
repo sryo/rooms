@@ -775,7 +775,7 @@ async function startRoom(name, { timeoutMs = 60000, image: override } = {}) {
         const reg = load();
         const room = reg.rooms[name] ?? fail("room_unknown", `no room '${name}'`);
         room.flags = flags;
-        delete room.device; // custom flags replace a device preset
+        delete room.device; delete room.size; // custom flags replace a device preset and a size
         save(reg);
         return flags;
       });
@@ -788,6 +788,8 @@ async function startRoom(name, { timeoutMs = 60000, image: override } = {}) {
         memory: (v) => { mebibytes(v); },
         idle: (v) => { idleMs(v); },
         device: (v) => { if (!Object.hasOwn(DEVICES, v)) fail("bad_device", `device '${v}' is one of ${Object.keys(DEVICES).join(", ")}`); },
+        // WxH, as loft takes it; stored as Chromium's --window-size.
+        size: (v) => { if (!/^\d{3,4}x\d{3,4}$/.test(String(v))) fail("bad_size", `size '${v}' must be WIDTHxHEIGHT, like 1280x800`); },
       };
       for (const [k, v] of Object.entries(settings)) {
         if (!known[k]) fail("bad_setting", `unknown setting '${k}'; rooms set takes ${Object.keys(known).join(", ")}`);
@@ -799,7 +801,8 @@ async function startRoom(name, { timeoutMs = 60000, image: override } = {}) {
         const reg = load();
         const room = reg.rooms[name] ?? fail("room_unknown", `no room '${name}'`);
         Object.assign(room, settings);
-        if (settings.device) room.flags = DEVICES[settings.device];
+        if (settings.device) { room.flags = DEVICES[settings.device]; if (!settings.size) delete room.size; }
+        if (settings.size) room.flags = [...(room.flags ?? []).filter((f) => !f.startsWith("--window-size=")), `--window-size=${settings.size.replace("x", ",")}`];
         save(reg);
         return { name, ...Object.fromEntries(Object.keys(known).filter((k) => room[k] !== undefined).map((k) => [k, room[k]])) };
       });
@@ -901,15 +904,15 @@ async function startRoom(name, { timeoutMs = 60000, image: override } = {}) {
 
 // ---------- CLI ----------
 const USAGE = `usage: rooms init <name> | up <name> | down <name>
-       rooms status [<name>] [--deep]        every room, or one (exit 1 unless up); --deep checks why
+       rooms status [<name>] [--deep]        every room, or one (exit 3 unless up); --deep checks why
        rooms signin <name> <url>             watch and drive the room, with a sign-in sheet for the site
        rooms signin <name> --from chrome|canary|<profile-path> <site>...   copy those sites' sessions
        rooms view <name> [--no-open]         watch and drive the room
        rooms site add <name> <https-url> [--signed-out <regex>] | site list <name>
        rooms check <name>                    which sites are still signed in (exit 1 if any isn't)
-       rooms set <name> memory=4G idle=30m|off device=phone|desktop   used from the next up; idle stops
-                                             a watched room nothing has used for that long (default 1h, off
-                                             keeps it up); its tabs come back
+       rooms set <name> memory=4G idle=30m|off device=phone|desktop size=1280x800   used from the next up;
+                                             idle stops a watched room nothing has used for that long (default 1h,
+                                             off keeps it up); its tabs come back
        rooms snapshot save|list|restore|delete <name> [<id>]   a stopped room's profile
        rooms autostart <name> on|off         start it at login; restart it if its browser stops answering, and
                                              move it to each new Chromium once nothing has used it for an hour
@@ -1074,7 +1077,7 @@ export async function main(argv, rooms = createRooms({ awake: macAwake, excludeF
         if (argv.includes("--deep")) { const d = await rooms.doctor(name); report(d); return d.ok ? 0 : 1; }
         const s = await rooms.status(name);
         print(s);
-        return s.state === "up" ? 0 : 1;
+        return s.state === "up" ? 0 : 3;
       }
       case "list": print(await rooms.list()); return 0; // older name for status
       case "rotate": print(await rooms.rotate(name)); return 0;
@@ -1110,7 +1113,11 @@ export async function main(argv, rooms = createRooms({ awake: macAwake, excludeF
       default: out(USAGE); return 2;
     }
   } catch (e) {
-    if (e instanceof RoomsError) { console.error(e.message); return 1; }
+    if (e instanceof RoomsError) {
+      if (json) out(JSON.stringify({ ok: false, code: e.code, error: e.message.slice(e.code.length + 2) }));
+      else console.error(e.message);
+      return 1;
+    }
     throw e;
   }
 }
