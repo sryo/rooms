@@ -44,6 +44,8 @@ while [ "$stopping" = 0 ]; do
     --disk-cache-dir=/tmp/rooms-cache \
     --window-size=1440,900 \
     --hide-crash-restore-bubble
+  # The Mac's appearance when the room started (rooms writes it): pages see prefers-color-scheme.
+  if [ "$(cat /rooms/appearance 2>/dev/null)" = dark ]; then set -- "$@" --force-dark-mode; fi
   if [ -f /rooms/flags ]; then
     while IFS= read -r flag; do [ -n "$flag" ] && set -- "$@" "$flag"; done < /rooms/flags
   fi

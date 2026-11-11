@@ -37,6 +37,11 @@ test("Chromium reads per-room flags as whole lines from the read-only control mo
   assert.match(entry, /chromium "\$@"/);
 });
 
+test("Chromium starts dark when the host wrote a dark appearance, and light otherwise", () => {
+  assert.match(entry, /\[ "\$\(cat \/rooms\/appearance 2>\/dev\/null\)" = dark \]; then set -- "\$@" --force-dark-mode; fi/);
+  assert.ok(!/WebContentsForceDark|enable-force-dark/.test(entry), "pages choose their own dark styles; none is darkened by force");
+});
+
 test("the relay runs and the image exposes only its port", () => {
   flag("node /opt/rooms/relay.mjs");
   assert.match(docker, /^EXPOSE 9223$/m);

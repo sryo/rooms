@@ -23,6 +23,7 @@ Set a room up while it's down, and before signing in, since a new user agent can
 
 ## Also
 
+- A room starts in your Mac's light or dark appearance, so sites look there as they do for you. If you switch while it is up, it follows the next time it starts.
 - `rooms status work --deep` runs a room's checks and says how to fix each one that fails, including when the room needs a rebuilt image after you update rooms.
 - `rooms logs work` shows what happened to a room: up, down, crashes, idle stops, checks, imports and sign-in handoffs. `--follow --until handoff.ended` waits for the next one, which is how an agent waits for you to finish signing in. `--up-ms` prints the median time the last ten ups took to answer CDP.
 - `rooms rotate work` gives a room a new token without restarting it, so nothing signs out.

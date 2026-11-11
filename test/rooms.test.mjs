@@ -788,3 +788,24 @@ test("status of a room that doesn't answer says it may recover and how to check 
   await rooms.claimWatch("work");
   assert.match((await rooms.status("work")).remedy, /^it may recover: its watcher restarts it within two minutes; check again with rooms status work/);
 });
+
+test("a room starts in the Mac's appearance, status shows it, and a later start follows a change", async () => {
+  let look = "dark";
+  const home = tmpHome(), runtime = fakeRuntime();
+  const rooms = createRooms({ home, runtime, fetch: fakeFetch(), sleep: async () => {}, appearance: () => look });
+  await rooms.init("work");
+  await rooms.up("work");
+  const file = join(home, "control", "work", "appearance");
+  assert.equal(readFileSync(file, "utf8"), "dark\n");
+  assert.equal((await rooms.status("work")).appearance, "dark");
+  look = "light";
+  assert.equal((await rooms.status("work")).appearance, "dark", "what the room runs with, not what the Mac shows now");
+  await rooms.down("work");
+  await rooms.up("work");
+  assert.equal(readFileSync(file, "utf8"), "light\n");
+  // No reader (a library user): light.
+  const plain = make();
+  await plain.rooms.init("work");
+  await plain.rooms.up("work");
+  assert.equal(readFileSync(join(plain.home, "control", "work", "appearance"), "utf8"), "light\n");
+});

@@ -37,7 +37,7 @@ Tools read `~/.rooms` directly. `test/contract.test.mjs` pins what they may rely
 - `src/` is install.sh's checkout of rooms (`ROOMS_DIR` moves it); rooms doesn't read or write it.
 - `run/leases/` and `run/claims/` are perch's own; rooms doesn't read or write them.
 - `control/<name>/viewing/<targetId>.json` is `{pid, since}` while the user watches or drives that tab in the viewer; perch refuses the tab to agents while that pid lives. It goes when the viewer closes or the site signs in.
-- `control/<name>/` is otherwise rooms' own: `token`, `events.jsonl` (one `{at, event, …}` per line, capped, the older half in `events.jsonl.1`), `owner.json` (who started the room, and when) and `watcher.json`.
+- `control/<name>/` is otherwise rooms' own: `token`, `events.jsonl` (one `{at, event, …}` per line, capped, the older half in `events.jsonl.1`), `owner.json` (who started the room, and when), `watcher.json` and `appearance` (`dark` or `light`: the Mac's when the room started, which the room's Chromium follows; `rooms status` shows it).
 - `run/registry.lock.sqlite` serializes registry edits. `run/token-pending.json` records a token rotation until both the registry and the mounted token match; the next registry read completes one interrupted by a crash.
 - `GET <port>/health` needs no token and answers `{ok, protocol}`. `GET <endpoint>/rooms/activity` answers `{idleMs}`, the time since a client last used the room. `GET <endpoint>/rooms/memory` answers `{totalMb, availableMb, ended, last}`: the room's memory, how many tabs the guard ended, and the last one (`{at, mb, availableMb}`); 404 on an image without the guard.
 - After `rooms rotate`, the room's open connections close; read the token again from `rooms.json` and reconnect.

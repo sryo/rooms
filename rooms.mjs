@@ -223,6 +223,8 @@ const macNotify = (title, body) => {
   const q = (x) => `"${String(x).replace(/[\\"]/g, "\\$&")}"`;
   spawnSync("osascript", ["-e", `display notification ${q(body)} with title ${q(title)}`], { stdio: "ignore", timeout: 10000 });
 };
+// The Mac's appearance: the key is "Dark" in dark mode and absent in light.
+export const macAppearance = () => (/^Dark/.test(spawnSync("defaults", ["read", "-g", "AppleInterfaceStyle"], { encoding: "utf8", timeout: 5000 }).stdout || "") ? "dark" : "light");
 const timeMachineExclude = (path) => { spawnSync("tmutil", ["addexclusion", path], { stdio: "ignore", timeout: 10000 }); };
 
 export function createRooms({
@@ -244,6 +246,7 @@ export function createRooms({
   launchAgents = join(homedir(), "Library", "LaunchAgents"),
   excludeFromBackup = null, // the CLI passes timeMachineExclude
   notify = null, // the CLI passes macNotify
+  appearance = null, // the CLI passes macAppearance; without it a room starts light
   buildContext = dirname(fileURLToPath(import.meta.url)),
 } = {}) {
   const file = join(home, "rooms.json");
@@ -395,6 +398,10 @@ async function startRoom(name, { timeoutMs = 60000, image: override } = {}) {
     const flags = chromeFlags(room.flags ?? []);
     if (flags.length) writeFileSync(join(control, "flags"), flags.join("\n") + "\n", { mode: 0o600 });
     else rmSync(join(control, "flags"), { force: true });
+    // A room starts in the Mac's light or dark appearance, so pages there look as they do for
+    // the user. A change while it is up applies at its next start.
+    const look = appearance?.() === "dark" ? "dark" : "light";
+    writeFileSync(join(control, "appearance"), look + "\n", { mode: 0o600 });
 
     const envFile = join(home, "run", `${name}.env`);
     mkdirSync(join(home, "run"), { recursive: true, mode: 0o700 });
@@ -790,7 +797,9 @@ async function startRoom(name, { timeoutMs = 60000, image: override } = {}) {
       let memory;
       try { const res = await fetch(`${endpoint(name)}/rooms/memory`, { signal: AbortSignal.timeout(1000) }); if (res.ok) { const m = await res.json(); if (Number.isFinite(m?.totalMb)) memory = m; } } catch {}
       const owner = readJson(ownerFile(name));
-      return { name, state: "up", since: owner?.startedAt, owner, ...(alive(watcher) && { watcher }), browser: v.Browser, port: room.cdp.port, ...(memory && { memory }), profile: room.profile };
+      let look;
+      try { look = readFileSync(join(controlDir(name), "appearance"), "utf8").trim(); } catch {}
+      return { name, state: "up", since: owner?.startedAt, owner, ...(alive(watcher) && { watcher }), browser: v.Browser, port: room.cdp.port, ...(look && { appearance: look }), ...(memory && { memory }), profile: room.profile };
     },
 
     // Sites the user signs in to once; `check` tells which still are, without reading cookies:
@@ -970,7 +979,7 @@ const USAGE = `usage: rooms init <name> | up <name> | down <name>
 Output is JSON when piped or with --json. Older names still work: list, doctor, checkpoint(s),
 restore, prune, watch, view --signin.`;
 const opt = (argv, f) => { const i = argv.indexOf(f); return i >= 0 ? argv[i + 1] : undefined; };
-export async function main(argv, rooms = createRooms({ awake: macAwake, excludeFromBackup: timeMachineExclude, notify: macNotify }), out = console.log, {
+export async function main(argv, rooms = createRooms({ awake: macAwake, excludeFromBackup: timeMachineExclude, notify: macNotify, appearance: macAppearance }), out = console.log, {
   tty = process.stdout.isTTY,
   sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
   viewer = async (name, opts) => (await import("./view.mjs")).startViewer({ wsUrl: await browserWsUrl(rooms.endpoint(name)), connect: (u) => connectCdp(u), ...opts }),
