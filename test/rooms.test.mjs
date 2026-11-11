@@ -698,3 +698,63 @@ test("autostart names Homebrew's stable node, not the versioned one an upgrade r
   assert.deepEqual([c.status, c.remedy], ["warn", "rooms autostart work on"]);
   assert.match(c.detail, /\/opt\/homebrew\/Cellar\/node\/0\.0\.1\/bin\/node, which is gone/);
 });
+
+// ---------- a hung room ----------
+// A guest out of memory answers nothing: not CDP, not the stop.
+const hungRoom = async ({ killable = true, helper = null } = {}) => {
+  const runtime = fakeRuntime();
+  let answering = true, asked = 0;
+  const fetch = async (url, init) => {
+    asked++;
+    if (answering) return { ok: true, status: 200, json: async () => ({ Browser: "Chromium/150.0", webSocketDebuggerUrl: "ws://x/devtools/browser/abc" }) };
+    // As a hung relay does: accept the connection and never answer.
+    return new Promise((res, rej) => init?.signal?.addEventListener("abort", () => rej(new Error("The operation was aborted due to timeout"))));
+  };
+  const home = tmpHome();
+  let connects = 0;
+  const signals = [];
+  if (helper) runtime.helperPid = (cname) => (runtime.containers.get(cname)?.running ? helper : null);
+  // Ending the helper ends the VM, so the container reads stopped.
+  const signal = (pid, sig) => { signals.push([pid, sig]); if (pid === helper) runtime.containers.get("rooms-work").running = false; };
+  const rooms = createRooms({ home, runtime, fetch, signal, sleep: async () => {}, image: "rooms-chrome:test", portBase: 9300, physicalMemory: 64 * 2 ** 30, connect: async () => { connects++; return new Promise(() => {}); } });
+  await rooms.init("work");
+  await rooms.up("work");
+  answering = false;
+  const exec = runtime.exec;
+  runtime.exec = (argv, opts) => {
+    if (argv[0] === "stop") { runtime.calls.push(argv); runtime.stopOpts = opts; return { code: 1, stdout: "", stderr: "timed out" }; }
+    if (argv[0] === "kill") { runtime.calls.push(argv); if (killable) runtime.containers.get(argv.at(-1)).running = false; return { code: killable ? 0 : 1, stdout: "", stderr: "" }; }
+    return exec(argv);
+  };
+  return { home, runtime, rooms, signals, connects: () => connects, asked: () => asked };
+};
+
+test("down on a room that answers nothing skips the clean close, kills the container the stop left running, and ends down", async () => {
+  const { home, runtime, rooms, connects } = await hungRoom();
+  const r = await rooms.down("work");
+  assert.deepEqual(r, { name: "work", state: "down" });
+  assert.equal(connects(), 0, "no CDP connection to a browser that doesn't answer its health check");
+  const order = runtime.calls.map((c) => c[0]).filter((c) => ["stop", "kill", "delete"].includes(c));
+  assert.deepEqual(order, ["stop", "kill", "delete"]);
+  assert.ok(runtime.stopOpts?.timeoutMs <= 45000, "the stop is given less than the runtime's two minutes");
+  assert.equal(runtime.containers.has("rooms-work"), false);
+  assert.equal((await rooms.events("work")).at(-1).event, "down");
+  assert.ok(existsSync(join(home, "profiles", "work")));
+});
+
+test("a guest that ignores the stop and the kill is ended through its container's runtime helper, and only that process", async () => {
+  const { runtime, rooms, signals } = await hungRoom({ killable: false, helper: 4242 });
+  assert.deepEqual(await rooms.down("work"), { name: "work", state: "down" });
+  assert.deepEqual(signals, [[4242, "SIGTERM"]]);
+  assert.equal(runtime.containers.has("rooms-work"), false);
+  assert.equal((await rooms.events("work")).at(-1).event, "down");
+});
+
+test("down never says down while the container still runs: stop_failed, and nothing is logged or cleared", async () => {
+  const { home, runtime, rooms } = await hungRoom({ killable: false });
+  assert.equal(await code(() => rooms.down("work")), "stop_failed");
+  assert.equal(runtime.containers.get("rooms-work").running, true);
+  assert.equal(runtime.calls.some((c) => c[0] === "delete"), false);
+  assert.equal((await rooms.events("work")).at(-1).event, "up");
+  assert.ok(existsSync(join(home, "control", "work", "owner.json")));
+});

@@ -35,6 +35,8 @@ const LEGACY_MARKERS = [".rooms-stop", ".rooms-flags"];
 const HOUR = 3600000, DAY = 24 * HOUR;
 // How long nothing must have used a room before it moves to a new build of the image.
 const UPDATE_QUIET_MS = HOUR;
+// down: how long a clean Browser.close may take, and each of the stop and the kill after it.
+const CLOSE_MS = 15000, STOP_MS = 40000;
 // A watched room with no idle setting stops after this long unused; idle=off keeps it up.
 const DEFAULT_IDLE = "1h";
 function chromeFlags(flags) {
@@ -78,7 +80,7 @@ function macKeychain(service) {
 export function appleContainer(bin = "container") {
   return {
     available: () => spawnSync(bin, ["--version"], { encoding: "utf8" }).status === 0,
-    exec: (argv) => { const r = spawnSync(bin, argv, { encoding: "utf8", timeout: 120000 }); return { code: r.status ?? 1, stdout: r.stdout ?? "", stderr: r.stderr ?? String(r.error ?? "") }; },
+    exec: (argv, { timeoutMs = 120000 } = {}) => { const r = spawnSync(bin, argv, { encoding: "utf8", timeout: timeoutMs }); return { code: r.status ?? 1, stdout: r.stdout ?? "", stderr: r.stderr ?? String(r.error ?? "") }; },
     imageVersion(image) {
       const r = spawnSync(bin, ["run", "--rm", "--entrypoint", "chromium", image, "--version"], { encoding: "utf8", timeout: 120000 });
       if (r.status !== 0) fail("runtime_error", `could not read ${image}'s Chromium version: ${r.stderr?.trim() || r.error || "unknown error"}`);
@@ -230,6 +232,7 @@ export function createRooms({
   physicalMemory = totalmem(),
   now = Date.now,
   connect = (url) => connectCdp(url),
+  signal = (pid, sig) => process.kill(pid, sig),
   awake = null, // the CLI passes macAwake; library users and tests hold nothing
   keychain = macKeychain,
   cloneFile = apfsClone,
@@ -493,14 +496,32 @@ async function startRoom(name, { timeoutMs = 60000, image: override } = {}) {
         writeFileSync(stopFile(name), "", { mode: 0o600 });
         // Chromium writes cookies to disk lazily (~30 s); a clean Browser.close flushes them, so a
         // sign-in made just before `down` survives. Best effort: the stop below still runs.
-        try {
+        // A browser that doesn't answer its health check (a guest out of memory) can't be closed
+        // cleanly, and one that stops answering midway doesn't hold the stop up.
+        const close = async () => {
+          await probe(name);
           const cdp = await connect(await browserWsUrl(endpoint(name), fetch));
           await cdp.send("Browser.close").catch(() => {});
           cdp.close();
           const t0 = Date.now();
           while (Date.now() - t0 < 5000) { try { await probe(name); } catch { break; } await sleep(250); }
-        } catch {}
-        runtime.exec(["stop", "--time", "15", cname]);
+        };
+        let timer;
+        await Promise.race([close().catch(() => {}), new Promise((r) => { timer = setTimeout(r, CLOSE_MS); })]);
+        clearTimeout(timer);
+        runtime.exec(["stop", "--time", "15", cname], { timeoutMs: STOP_MS });
+        // A hung guest ignores the stop too. Down means the container is gone, never that it was asked.
+        if (containers().get(cname) === "running") {
+          runtime.exec(["kill", cname], { timeoutMs: STOP_MS });
+          // A guest too far gone for the kill (seen out of memory) ends with its runtime helper,
+          // the one process that holds this container's VM.
+          const helper = containers().get(cname) === "running" && runtime.helperPid?.(cname);
+          if (helper) {
+            try { signal(helper, "SIGTERM"); } catch {}
+            for (let i = 0; i < 20 && containers().get(cname) === "running"; i++) await sleep(500);
+          }
+          if (containers().get(cname) === "running") fail("stop_failed", `${cname} is still running after a stop, a kill and ending its runtime helper; restart the runtime (container system stop; container system start), then rooms down ${name}; profile kept`);
+        }
       }
       if (state) runtime.exec(["delete", cname]);
       rmSync(ownerFile(name), { force: true });
