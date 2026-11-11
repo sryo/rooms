@@ -41,7 +41,7 @@ test("the relay runs and the image exposes only its port", () => {
   flag("node /opt/rooms/relay.mjs");
   assert.match(docker, /^EXPOSE 9223$/m);
   assert.ok(!/EXPOSE 9222/.test(docker));
-  assert.match(docker, /COPY relay\.mjs \/opt\/rooms\/relay\.mjs/);
+  assert.match(docker, /COPY relay\.mjs guard\.mjs \/opt\/rooms\/$/m, "the relay and the memory guard it starts");
 });
 
 test("ports agree across Dockerfile, entrypoint and the CLI", async () => {

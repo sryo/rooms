@@ -15,7 +15,7 @@ RUN apt-get update \
  && useradd --create-home --uid 1000 room \
  && mkdir -p /profile /opt/rooms && chown room:room /profile
 
-COPY relay.mjs /opt/rooms/relay.mjs
+COPY relay.mjs guard.mjs /opt/rooms/
 COPY image/entrypoint.sh /opt/rooms/entrypoint.sh
 COPY image/policies.json /etc/chromium/policies/managed/rooms.json
 

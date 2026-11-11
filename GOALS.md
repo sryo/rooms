@@ -25,6 +25,7 @@ When two goals conflict, the higher one wins.
 | 1 | sites signed in after down/up, crash and update; update rollback on a lost sign-in | `rooms check <name>`, `test/update.test.mjs`, `test/sites.test.mjs` (down flushes cookies), `test/rooms.test.mjs` (profile_newer) | `npm test` |
 | 2 | no stop or move while the user is at the viewer or the room was used in the last hour | `test/update.test.mjs`, `test/rooms.test.mjs` (idle stop and held tabs) | `npm test` |
 | 3 | days the image is behind; restart and update failures | `rooms status <name> --deep` (image, container), `test/update.test.mjs`, `test/rooms.test.mjs` | live: `node rooms.mjs status main --deep` |
+| 3 | a room out of memory keeps answering: the heaviest tab ends, not the browser | `test/guard.test.mjs` | `npm test` |
 | 4 | room memory against the 80% cap | `test/rooms.test.mjs` (the 80% check) | `npm test` |
 | 4 | profile size, KB | `du -sk ~/.rooms/profiles/<name>` | live: `du -sk ~/.rooms/profiles/main` |
 | 4 | container exec calls per `rooms up`, CDP calls per `rooms check` of three sites, lines of code | `bench/run.mjs` (the test fakes, no container or browser) | `node bench/run.mjs` |

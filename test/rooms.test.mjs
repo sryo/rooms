@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { existsSync, statSync, readFileSync, mkdirSync, rmSync, writeFileSync, copyFileSync, symlinkSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
-import { createRooms, RoomsError, stableNode } from "../rooms.mjs";
+import { createRooms, RoomsError, stableNode, containerBin } from "../rooms.mjs";
 import { acquireFileLock } from "../locks.mjs";
 import { tmpHome, fakeRuntime, fakeFetch } from "./helpers.mjs";
 
@@ -692,6 +692,10 @@ test("autostart names Homebrew's stable node, not the versioned one an upgrade r
   await rooms.init("work");
   assert.equal((await rooms.doctor("work")).checks.find((c) => c.id === "autostart").status, "skip");
   const agent = await rooms.autostart("work");
+  const idle = (await rooms.doctor("work")).checks.find((c) => c.id === "autostart");
+  assert.deepEqual([idle.status, idle.remedy], ["warn", `launchctl bootstrap gui/$(id -u) ${agent.path}`], "written but not loaded: nothing watches the room yet");
+  assert.match(idle.detail, /isn't running, so nothing restarts the room/);
+  await rooms.claimWatch("work");
   assert.equal((await rooms.doctor("work")).checks.find((c) => c.id === "autostart").status, "pass");
   writeFileSync(agent.path, readFileSync(agent.path, "utf8").replace(/<string>[^<]*node<\/string>/, "<string>/opt/homebrew/Cellar/node/0.0.1/bin/node</string>"));
   const c = (await rooms.doctor("work")).checks.find((x) => x.id === "autostart");
@@ -757,4 +761,30 @@ test("down never says down while the container still runs: stop_failed, and noth
   assert.equal(runtime.calls.some((c) => c[0] === "delete"), false);
   assert.equal((await rooms.events("work")).at(-1).event, "up");
   assert.ok(existsSync(join(home, "control", "work", "owner.json")));
+});
+
+test("container is found in Homebrew's folders when PATH lacks them, as under launchd", () => {
+  const has = (...paths) => (p) => paths.includes(p);
+  assert.equal(containerBin({ PATH: "/usr/bin:/bin" }, has("/opt/homebrew/bin/container")), "/opt/homebrew/bin/container");
+  assert.equal(containerBin({ PATH: "/usr/bin:/x/bin" }, has("/x/bin/container", "/opt/homebrew/bin/container")), "/x/bin/container", "PATH first");
+  assert.equal(containerBin({}, has("/usr/local/bin/container")), "/usr/local/bin/container");
+  assert.equal(containerBin({ PATH: "/usr/bin" }, () => false), "container", "not installed: the bare name, so available() says so");
+});
+
+test("status of a room that doesn't answer says it may recover and how to check again; an up room carries the guard's memory", async () => {
+  let healthy = true, memory = null;
+  const base = fakeFetch(() => healthy);
+  const fetch = async (url, o) => url.endsWith("/rooms/memory") ? { ok: !!memory, status: memory ? 200 : 404, json: async () => memory ?? {} } : base(url, o);
+  const { rooms } = make({ fetch });
+  await rooms.init("work");
+  await rooms.up("work");
+  assert.equal("memory" in await rooms.status("work"), false, "an older image has no guard");
+  memory = { totalMb: 3072, availableMb: 900, ended: 1, last: { at: "2026-11-11T20:00:00.000Z", mb: 1200, availableMb: 200 } };
+  assert.deepEqual((await rooms.status("work")).memory, memory);
+  healthy = false;
+  const s = await rooms.status("work");
+  assert.equal(s.state, "unhealthy");
+  assert.equal(s.remedy, "it may recover: check again with rooms status work, or restart it now: rooms down work && rooms up work");
+  await rooms.claimWatch("work");
+  assert.match((await rooms.status("work")).remedy, /^it may recover: its watcher restarts it within two minutes; check again with rooms status work/);
 });

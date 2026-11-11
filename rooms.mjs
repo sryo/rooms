@@ -76,8 +76,13 @@ function macKeychain(service) {
   return r.stdout.replace(/\r?\n$/, "");
 }
 
+// Where `container` is. A login agent runs with launchd's PATH, which has no Homebrew, so the
+// watcher would never find it by name.
+export const containerBin = (env = process.env, exists = existsSync) =>
+  [...String(env.PATH ?? "").split(":").filter(Boolean), "/opt/homebrew/bin", "/usr/local/bin"].map((d) => join(d, "container")).find(exists) ?? "container";
+
 // The real runtime: Apple's `container` CLI (flags per apple/container docs/command-reference.md).
-export function appleContainer(bin = "container") {
+export function appleContainer(bin = containerBin()) {
   return {
     available: () => spawnSync(bin, ["--version"], { encoding: "utf8" }).status === 0,
     exec: (argv, { timeoutMs = 120000 } = {}) => { const r = spawnSync(bin, argv, { encoding: "utf8", timeout: timeoutMs }); return { code: r.status ?? 1, stdout: r.stdout ?? "", stderr: r.stderr ?? String(r.error ?? "") }; },
@@ -274,7 +279,7 @@ export function createRooms({
   // What the image is made from, so a change to rooms' own image files is built in too.
   const recipe = () => {
     const h = createHash("sha256");
-    for (const f of ["image/Dockerfile", "image/entrypoint.sh", "image/policies.json", "relay.mjs"]) { try { h.update(f).update(readFileSync(join(buildContext, f))); } catch {} }
+    for (const f of ["image/Dockerfile", "image/entrypoint.sh", "image/policies.json", "relay.mjs", "guard.mjs"]) { try { h.update(f).update(readFileSync(join(buildContext, f))); } catch {} }
     return h.digest("hex").slice(0, 16);
   };
   const readJson = (path) => { try { return JSON.parse(readFileSync(path, "utf8")); } catch { return undefined; } };
@@ -704,7 +709,10 @@ async function startRoom(name, { timeoutMs = 60000, image: override } = {}) {
       let agentNode = null;
       try { agentNode = /<key>ProgramArguments<\/key><array><string>([^<]*)<\/string>/.exec(readFileSync(agentFile(name), "utf8"))?.[1] ?? ""; } catch {}
       const agentOk = agentNode == null || (agentNode && existsSync(agentNode.replaceAll("&amp;", "&")));
-      add("autostart", "recommended", agentNode == null ? "skip" : agentOk ? "pass" : "warn", agentOk ? {} : { detail: `its login agent runs ${agentNode}, which is gone, so it no longer starts at login`, remedy: `rooms autostart ${name} on` });
+      // Nor does an agent that isn't loaded (it loads at login) restart a room that stops answering.
+      const watched = alive(readJson(watcherFile(name))?.pid);
+      add("autostart", "recommended", agentNode == null ? "skip" : agentOk && watched ? "pass" : "warn", !agentOk ? { detail: `its login agent runs ${agentNode}, which is gone, so it no longer starts at login`, remedy: `rooms autostart ${name} on` }
+        : !watched ? { detail: "its login agent isn't running, so nothing restarts the room if its browser stops answering; it starts at the next login", remedy: `launchctl bootstrap gui/$(id -u) ${agentFile(name)}` } : {});
       const lastCheck = readEvents(eventsFile(name)).filter((e) => e.event === "check").at(-1);
       const notIn = lastCheck ? Object.entries(lastCheck.sites ?? {}).filter(([, st]) => st !== "signed_in").map(([o]) => o) : [];
       add("sites", "info", !(room.sites ?? []).length ? "skip" : !lastCheck || notIn.length ? "warn" : "pass", (room.sites ?? []).length && (!lastCheck || notIn.length) ? { detail: lastCheck ? `not signed in at the last check: ${notIn.join(", ")}` : "never checked", remedy: remedies.check(name) } : {});
@@ -773,8 +781,16 @@ async function startRoom(name, { timeoutMs = 60000, image: override } = {}) {
       const room = get(name);
       const state = runtime.available() ? containers().get(containerName(name)) : undefined;
       if (state !== "running") return { name, state: "down", profile: room.profile };
-      try { const v = await probe(name); const owner = readJson(ownerFile(name)), watcher = readJson(watcherFile(name))?.pid; return { name, state: "up", since: owner?.startedAt, owner, ...(alive(watcher) && { watcher }), browser: v.Browser, port: room.cdp.port, profile: room.profile }; }
-      catch (e) { return { name, state: "unhealthy", error: e.message, profile: room.profile }; }
+      const watcher = readJson(watcherFile(name))?.pid;
+      let v;
+      // A browser that doesn't answer may be loading or short of memory, and can answer again.
+      try { v = await probe(name); }
+      catch (e) { return { name, state: "unhealthy", error: e.message, remedy: `it may recover: ${alive(watcher) ? "its watcher restarts it within two minutes; " : ""}check again with rooms status ${name}, or restart it now: rooms down ${name} && ${remedies.up(name)}`, profile: room.profile }; }
+      // The guard's count of tabs it ended to keep the browser answering; absent on an older image.
+      let memory;
+      try { const res = await fetch(`${endpoint(name)}/rooms/memory`, { signal: AbortSignal.timeout(1000) }); if (res.ok) { const m = await res.json(); if (Number.isFinite(m?.totalMb)) memory = m; } } catch {}
+      const owner = readJson(ownerFile(name));
+      return { name, state: "up", since: owner?.startedAt, owner, ...(alive(watcher) && { watcher }), browser: v.Browser, port: room.cdp.port, ...(memory && { memory }), profile: room.profile };
     },
 
     // Sites the user signs in to once; `check` tells which still are, without reading cookies:

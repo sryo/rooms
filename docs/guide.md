@@ -17,7 +17,7 @@ That copies those sites' cookies (only cookies: passwords and other site data st
 ## Settings
 
 Set a room up while it's down, and before signing in, since a new user agent can sign sites out:
-- `rooms set work memory=6G` gives a heavy room more memory (3G by default).
+- `rooms set work memory=6G` gives a heavy room more memory (3G by default). When a room runs out, it closes the page using the most memory so the rest keep working; that tab shows a crashed page until it is reloaded, and `rooms status work` counts how often it happened. If it keeps happening, give the room more memory.
 - `rooms set mobile device=phone` makes a room look like a phone; `device=desktop` undoes it. `rooms set mobile size=1280x800` sets its window size, written as loft writes it. `rooms flags set` takes your own user agent, touch, scale and window size flags instead.
 - While `autostart` is on, a room nobody has used for an hour stops. `rooms set work idle=30m` changes how long, and `idle=off` keeps it up. Its tabs come back when it starts again, as they do after any restart.
 

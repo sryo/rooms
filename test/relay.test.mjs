@@ -138,9 +138,24 @@ test("/health needs no token and says only that the relay is up and which protoc
   try {
     const r = await fetch(`${s.base}/health`);
     assert.equal(r.status, 200);
-    assert.deepEqual(await r.json(), { ok: true, protocol: 2 });
+    assert.deepEqual(await r.json(), { ok: true, protocol: 3 });
     assert.ok(!s.chrome.seen.some((x) => x.url.includes("health")));
   } finally { s.close(); }
+});
+
+test("/rooms/memory needs the token and answers the guard's state from the relay; 404 without a guard", async () => {
+  const chrome = await fakeChrome();
+  const state = { totalMb: 3072, availableMb: 200, ended: 1, last: { at: "2026-11-11T20:00:00.000Z", mb: 1200, availableMb: 200 } };
+  const relay = await startRelay({ token: TOKEN, listenHost: "127.0.0.1", listenPort: 0, upstreamPort: chrome.port, memory: () => state });
+  const bare = await startRelay({ token: TOKEN, listenHost: "127.0.0.1", listenPort: 0, upstreamPort: chrome.port });
+  try {
+    const base = `http://127.0.0.1:${relay.port}`;
+    assert.equal((await fetch(`${base}/rooms/memory`)).status, 401);
+    assert.deepEqual(await (await fetch(`${base}/${TOKEN}/rooms/memory`)).json(), state);
+    assert.equal((await fetch(`http://127.0.0.1:${bare.port}/${TOKEN}/rooms/memory`)).status, 404);
+    assert.ok(!chrome.seen.some((x) => x.url.includes("memory")), "answered by the relay, not forwarded");
+    assert.deepEqual(await (await fetch(`${base}/${TOKEN}/rooms/activity`)).json().then((a) => Object.keys(a)), ["idleMs"], "reading memory is not use");
+  } finally { relay.close(); bare.close(); chrome.close(); }
 });
 
 test("with a token file, rewriting the file rotates the token: the old one stops working and its open connections close", async () => {

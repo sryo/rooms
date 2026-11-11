@@ -8,22 +8,24 @@
 // GET /health needs no token: {ok, protocol}, nothing about the room.
 // GET /rooms/activity is answered here: {idleMs} since a client last sent anything, for idle stop.
 // Probes and tab listings (/json/*) don't count as use.
+// GET /rooms/memory is the memory guard's state (guard.mjs): {totalMb, availableMb, ended, last}.
 
 import http from "node:http";
 import net from "node:net";
 import { timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
+import { startGuard } from "./guard.mjs";
 
 const TOKEN_RE = /^[0-9a-f]{48}$/;
 // What a client can expect of this relay. 1: token auth and ws rewriting. 2: adds /health and
-// /rooms/activity.
-export const PROTOCOL = 2;
+// /rooms/activity. 3: adds /rooms/memory.
+export const PROTOCOL = 3;
 
 // With tokenFile the token is read from that file (the read-only /rooms mount in a room), so the host
 // rotates or revokes it by rewriting the file: the old token stops working at once and connections
 // made with it are closed. An unreadable or malformed file lets nothing in.
-export async function startRelay({ token, tokenFile, listenHost = "0.0.0.0", listenPort = 9223, upstreamHost = "127.0.0.1", upstreamPort = 9222, now = Date.now }) {
+export async function startRelay({ token, tokenFile, listenHost = "0.0.0.0", listenPort = 9223, upstreamHost = "127.0.0.1", upstreamPort = 9222, now = Date.now, memory = null }) {
   const read = () => { if (!tokenFile) return token; try { return readFileSync(tokenFile, "utf8").trim(); } catch { return null; } };
   if (!TOKEN_RE.test(read() ?? "")) throw new Error("relay: refusing to start without a 48-hex token");
   const upgraded = new Set();
@@ -58,6 +60,7 @@ export async function startRelay({ token, tokenFile, listenHost = "0.0.0.0", lis
     const path = authorize(req);
     if (path == null) { res.writeHead(401, { "content-type": "text/plain" }); return res.end("401: token required\n"); }
     if (path === "/rooms/activity") { res.writeHead(200, { "content-type": "application/json" }); return res.end(JSON.stringify({ idleMs: now() - lastUse })); }
+    if (path === "/rooms/memory") { res.writeHead(memory ? 200 : 404, { "content-type": "application/json" }); return res.end(JSON.stringify(memory ? memory() : {})); }
     if (!/^\/json(\/|$)/.test(path)) lastUse = now();
     const viaToken = !req.headers.authorization;
     const publicAuthority = req.headers.host || `${listenHost}:${srv.address().port}`;
@@ -104,6 +107,7 @@ export async function startRelay({ token, tokenFile, listenHost = "0.0.0.0", lis
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const r = await startRelay({ token: process.env.ROOMS_TOKEN, tokenFile: process.env.ROOMS_TOKEN_FILE, listenPort: Number(process.env.ROOMS_RELAY_PORT || 9223), upstreamPort: Number(process.env.ROOMS_CDP_PORT || 9222) });
+  const guard = startGuard();
+  const r = await startRelay({ memory: () => guard.state, token: process.env.ROOMS_TOKEN, tokenFile: process.env.ROOMS_TOKEN_FILE, listenPort: Number(process.env.ROOMS_RELAY_PORT || 9223), upstreamPort: Number(process.env.ROOMS_CDP_PORT || 9222) });
   console.log(`rooms relay on :${r.port} -> 127.0.0.1:${process.env.ROOMS_CDP_PORT || 9222}`);
 }
