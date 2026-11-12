@@ -120,3 +120,11 @@ test("a restart brings the room's tabs back, after a clean stop or a crash, and 
   flag("--hide-crash-restore-bubble");
   assert.ok(!/chromium "\$@" about:blank/.test(entry), "a URL argument opens one more tab on every start");
 });
+
+test("the screen and the window take the room's size, 1440x900 when the host wrote none", () => {
+  assert.match(entry, /size=\$\(cat \/rooms\/size 2>\/dev\/null \|\| true\)/, "a missing file must not end the script under set -e");
+  assert.match(entry, /\[0-9\]\*x\[0-9\]\*\) ;; \*\) size=1440x900 ;;/, "anything else falls back");
+  assert.match(entry, /Xvfb :99 -screen 0 "\$\{size\}x24"/);
+  flag('--window-size="${size%x*},${size#*x}"');
+  assert.ok(!entry.includes("1440,900") && !entry.includes("1440x900x24"), "no fixed size left");
+});

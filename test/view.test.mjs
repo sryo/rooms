@@ -212,3 +212,12 @@ test("both loopback hosts on the bound port reach every route", async () => {
     }
   } finally { s.close(); }
 });
+
+test("the screencast is the room's size, not a fixed 1440x900", async (t) => {
+  const chrome = new FakeChrome();
+  chrome.targets.set("T0", { url: "https://a.test/" });
+  const v = await startViewer({ wsUrl: "ws://room/devtools/browser/x", connect: (u) => connectCdp(u, { WebSocket: chrome.WebSocket, timeoutMs: 500 }), size: "2560x1440" });
+  t.after(() => v.close());
+  const cast = chrome.log.find((l) => l.method === "Page.startScreencast");
+  assert.deepEqual([cast.params.maxWidth, cast.params.maxHeight], [2560, 1440]);
+});

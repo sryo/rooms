@@ -17,9 +17,13 @@ rm -f /profile/SingletonLock /profile/SingletonSocket /profile/SingletonCookie
 # here, in the guest, because the host must not delete inside a folder the guest controls.
 rm -rf "/profile/Default/Code Cache" "/profile/Default/Cache"
 
+# The room's size (rooms writes it at each start): the screen and the window both take it.
+size=$(cat /rooms/size 2>/dev/null || true)
+case "$size" in [0-9]*x[0-9]*) ;; *) size=1440x900 ;; esac
+
 # Xvfb and the relay are restarted if they die: without either the room answers
 # nothing until someone runs down and up.
-( while :; do Xvfb :99 -screen 0 1440x900x24 -nolisten tcp -ac; echo "rooms: Xvfb exited; restarting" >&2; sleep 1; done ) &
+( while :; do Xvfb :99 -screen 0 "${size}x24" -nolisten tcp -ac; echo "rooms: Xvfb exited; restarting" >&2; sleep 1; done ) &
 ( while :; do node /opt/rooms/relay.mjs; echo "rooms: relay exited; restarting" >&2; sleep 1; done ) &
 
 # On stop, end Chromium cleanly (it flushes cookies on SIGTERM) and don't restart it.
@@ -42,7 +46,7 @@ while [ "$stopping" = 0 ]; do
     --disable-component-extensions-with-background-pages \
     --disk-cache-size=67108864 \
     --disk-cache-dir=/tmp/rooms-cache \
-    --window-size=1440,900 \
+    --window-size="${size%x*},${size#*x}" \
     --hide-crash-restore-bubble
   # The Mac's appearance when the room started (rooms writes it): pages see prefers-color-scheme.
   if [ "$(cat /rooms/appearance 2>/dev/null)" = dark ]; then set -- "$@" --force-dark-mode; fi

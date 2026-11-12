@@ -10,7 +10,7 @@ const MAX_BODY = 8192;
 
 // With `signin`, onSignedIn is called once the tab is on that site past its sign-in page: same
 // origin, no `signedOut` path, no visible password field (the rule `rooms check` uses).
-export async function startViewer({ wsUrl, connect, signin = null, signedOut = null, onSignedIn = null, pollMs = 2000, log = () => {}, port = 0 }) {
+export async function startViewer({ wsUrl, connect, signin = null, signedOut = null, onSignedIn = null, pollMs = 2000, log = () => {}, port = 0, size = "1440x900" }) {
   const cdp = await connect(wsUrl);
   const viewToken = randomBytes(16).toString("hex");
   const expected = signin ? new URL(signin).origin : null;
@@ -31,7 +31,7 @@ export async function startViewer({ wsUrl, connect, signin = null, signedOut = n
     last = `data: ${JSON.stringify({ data: p.data, w: p.metadata?.deviceWidth, h: p.metadata?.deviceHeight })}\n\n`;
     for (const res of clients) res.write(last);
   });
-  await cdp.send("Page.startScreencast", { format: "jpeg", quality: 60, maxWidth: 1440, maxHeight: 900, everyNthFrame: 1 }, sessionId);
+  await cdp.send("Page.startScreencast", { format: "jpeg", quality: 60, maxWidth: Number(size.split("x")[0]), maxHeight: Number(size.split("x")[1]), everyNthFrame: 1 }, sessionId);
 
   let watching = null;
   if (signin && onSignedIn) {

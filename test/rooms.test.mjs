@@ -809,3 +809,30 @@ test("a room starts in the Mac's appearance, status shows it, and a later start 
   await plain.rooms.up("work");
   assert.equal(readFileSync(join(plain.home, "control", "work", "appearance"), "utf8"), "light\n");
 });
+
+// One size drives the room's screen, its window and the viewer, as `loft up WxH` sizes its
+// display: the screen used to stay 1440x900 whatever size= said, so a larger window hung off it.
+test("a room's screen is its size: written at each start from size, else its device's window, else 1440x900; status shows it", async () => {
+  const { rooms, home } = make();
+  const file = join(home, "control", "work", "size");
+  await rooms.init("work");
+  await rooms.up("work");
+  assert.equal(readFileSync(file, "utf8"), "1440x900\n");
+  assert.equal((await rooms.status("work")).size, "1440x900");
+  await rooms.down("work");
+  await rooms.set("work", { device: "phone" });
+  await rooms.up("work");
+  assert.equal(readFileSync(file, "utf8"), "412x915\n", "the phone's screen is its window");
+  await rooms.down("work");
+  await rooms.set("work", { size: "2560x1440" });
+  await rooms.up("work");
+  assert.equal(readFileSync(file, "utf8"), "2560x1440\n");
+  assert.equal((await rooms.status("work")).size, "2560x1440");
+});
+
+test("size= takes loft's range, 640x480 to 5120x2880", async () => {
+  const { rooms } = make();
+  await rooms.init("m");
+  for (const ok of ["640x480", "5120x2880"]) assert.equal((await rooms.set("m", { size: ok })).size, ok);
+  for (const bad of ["639x480", "640x479", "5121x2880", "5120x2881"]) assert.equal(await code(() => rooms.set("m", { size: bad })), "bad_size", bad);
+});

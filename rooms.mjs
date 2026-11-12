@@ -58,6 +58,10 @@ export const remedies = {
   check: (name) => `rooms check ${name}`,
 };
 
+// A room's screen, window and viewer size, WxH: size=, else the window its device or flags set.
+export const roomSize = (room) => room.size ?? ((room.flags ?? []).map((f) => /^--window-size=(\d+),(\d+)$/.exec(f)).find(Boolean)?.slice(1).join("x")) ?? "1440x900";
+const SIZE_MIN = [640, 480], SIZE_MAX = [5120, 2880];
+
 // `rooms set <name> device=…`: named sets of the flags above. Change a room's device before signing
 // in, since a new user agent can sign sites out.
 const DEVICES = {
@@ -402,6 +406,7 @@ async function startRoom(name, { timeoutMs = 60000, image: override } = {}) {
     // the user. A change while it is up applies at its next start.
     const look = appearance?.() === "dark" ? "dark" : "light";
     writeFileSync(join(control, "appearance"), look + "\n", { mode: 0o600 });
+    writeFileSync(join(control, "size"), roomSize(room) + "\n", { mode: 0o600 });
 
     const envFile = join(home, "run", `${name}.env`);
     mkdirSync(join(home, "run"), { recursive: true, mode: 0o700 });
@@ -797,9 +802,10 @@ async function startRoom(name, { timeoutMs = 60000, image: override } = {}) {
       let memory;
       try { const res = await fetch(`${endpoint(name)}/rooms/memory`, { signal: AbortSignal.timeout(1000) }); if (res.ok) { const m = await res.json(); if (Number.isFinite(m?.totalMb)) memory = m; } } catch {}
       const owner = readJson(ownerFile(name));
-      let look;
+      let look, size;
       try { look = readFileSync(join(controlDir(name), "appearance"), "utf8").trim(); } catch {}
-      return { name, state: "up", since: owner?.startedAt, owner, ...(alive(watcher) && { watcher }), browser: v.Browser, port: room.cdp.port, ...(look && { appearance: look }), ...(memory && { memory }), profile: room.profile };
+      try { size = readFileSync(join(controlDir(name), "size"), "utf8").trim(); } catch {}
+      return { name, state: "up", since: owner?.startedAt, owner, ...(alive(watcher) && { watcher }), browser: v.Browser, port: room.cdp.port, ...(look && { appearance: look }), ...(size && { size }), ...(memory && { memory }), profile: room.profile };
     },
 
     // Sites the user signs in to once; `check` tells which still are, without reading cookies:
@@ -843,7 +849,10 @@ async function startRoom(name, { timeoutMs = 60000, image: override } = {}) {
         idle: (v) => { idleMs(v); },
         device: (v) => { if (!Object.hasOwn(DEVICES, v)) fail("bad_device", `device '${v}' is one of ${Object.keys(DEVICES).join(", ")}`); },
         // WxH, as loft takes it; stored as Chromium's --window-size.
-        size: (v) => { if (!/^\d{3,4}x\d{3,4}$/.test(String(v))) fail("bad_size", `size '${v}' must be WIDTHxHEIGHT, like 1280x800`); },
+        size: (v) => {
+          const wh = /^(\d{3,4})x(\d{3,4})$/.exec(String(v))?.slice(1).map(Number);
+          if (!wh || wh.some((n, i) => n < SIZE_MIN[i] || n > SIZE_MAX[i])) fail("bad_size", `size '${v}' must be WIDTHxHEIGHT from 640x480 to 5120x2880, like 1280x800`);
+        },
       };
       for (const [k, v] of Object.entries(settings)) {
         if (!known[k]) fail("bad_setting", `unknown setting '${k}'; rooms set takes ${Object.keys(known).join(", ")}`);
@@ -982,7 +991,7 @@ const opt = (argv, f) => { const i = argv.indexOf(f); return i >= 0 ? argv[i + 1
 export async function main(argv, rooms = createRooms({ awake: macAwake, excludeFromBackup: timeMachineExclude, notify: macNotify, appearance: macAppearance }), out = console.log, {
   tty = process.stdout.isTTY,
   sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
-  viewer = async (name, opts) => (await import("./view.mjs")).startViewer({ wsUrl: await browserWsUrl(rooms.endpoint(name)), connect: (u) => connectCdp(u), ...opts }),
+  viewer = async (name, opts) => (await import("./view.mjs")).startViewer({ wsUrl: await browserWsUrl(rooms.endpoint(name)), connect: (u) => connectCdp(u), size: (await rooms.status(name)).size, ...opts }),
   untilClosed = () => new Promise((r) => { process.once("SIGINT", r); process.once("SIGTERM", r); }),
 } = {}) {
   const json = argv.includes("--json") || !tty;
