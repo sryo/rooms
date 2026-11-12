@@ -12,7 +12,6 @@ set -euo pipefail
 
 ROOMS_REPO="${ROOMS_REPO:-https://github.com/sryo/rooms.git}"
 ROOMS_DIR="${ROOMS_DIR:-$HOME/.rooms/src}"
-ROOMS_REBUILD="${ROOMS_REBUILD:-0}"
 IMAGE="rooms-chrome:latest"
 
 [[ "$(uname -s)" == "Darwin" ]] || { echo "rooms only works on macOS." >&2; exit 1; }
@@ -21,24 +20,17 @@ command -v git >/dev/null || { echo "git not found. Run: xcode-select --install"
 command -v node >/dev/null || { echo "node not found. Install Node 22.16+ from https://nodejs.org (or: brew install node)" >&2; exit 1; }
 node -e 'const [a, b] = process.versions.node.split(".").map(Number); process.exit(a > 22 || (a === 22 && b >= 16) ? 0 : 1)' \
   || { echo "node $(node -v) < 22.16. Upgrade Node (brew upgrade node)." >&2; exit 1; }
-command -v npm >/dev/null || { echo "npm not found. Reinstall Node from https://nodejs.org (or: brew install node)" >&2; exit 1; }
 if ! command -v container >/dev/null; then
-  if command -v brew >/dev/null; then
-    echo "Installing Apple's container runtime..."
-    brew install container
-  else
-    echo "container not found. Install it from https://github.com/apple/container/releases (or install Homebrew, then: brew install container)" >&2
-    exit 1
-  fi
+  command -v brew >/dev/null || { echo "container not found. Install it from https://github.com/apple/container/releases (or install Homebrew, then: brew install container)" >&2; exit 1; }
+  echo "Installing Apple's container runtime..."
+  brew install container
 fi
 
-if [[ -f "$ROOMS_DIR/rooms.mjs" ]]; then
-  if [[ -d "$ROOMS_DIR/.git" ]]; then
-    echo "rooms already at $ROOMS_DIR — pulling latest..."
-    git -C "$ROOMS_DIR" pull --ff-only
-  else
-    echo "rooms already at $ROOMS_DIR (local, no git repo — skipping pull)..."
-  fi
+if [[ -f "$ROOMS_DIR/rooms.mjs" && -d "$ROOMS_DIR/.git" ]]; then
+  echo "rooms already at $ROOMS_DIR — pulling latest..."
+  git -C "$ROOMS_DIR" pull --ff-only
+elif [[ -f "$ROOMS_DIR/rooms.mjs" ]]; then
+  echo "rooms already at $ROOMS_DIR (local, no git repo — skipping pull)..."
 else
   echo "Cloning rooms to $ROOMS_DIR..."
   mkdir -p "$(dirname "$ROOMS_DIR")"
@@ -48,7 +40,7 @@ fi
 echo "Starting container..."
 container system start
 
-if [[ "$ROOMS_REBUILD" != "1" ]] && container image inspect "$IMAGE" >/dev/null 2>&1; then
+if [[ "${ROOMS_REBUILD:-}" != "1" ]] && container image inspect "$IMAGE" >/dev/null 2>&1; then
   echo "$IMAGE already built — skipping (ROOMS_REBUILD=1 rebuilds it)."
 else
   echo "Building $IMAGE (a few minutes)..."
