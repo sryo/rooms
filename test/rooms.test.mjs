@@ -836,3 +836,60 @@ test("size= takes loft's range, 640x480 to 5120x2880", async () => {
   for (const ok of ["640x480", "5120x2880"]) assert.equal((await rooms.set("m", { size: ok })).size, ok);
   for (const bad of ["639x480", "640x479", "5121x2880", "5120x2881"]) assert.equal(await code(() => rooms.set("m", { size: bad })), "bad_size", bad);
 });
+
+// ---------- growing ----------
+// The memory guard's count of tabs it ended is the sign a room is too small.
+const growRoom = async (settings, memory) => {
+  const home = tmpHome(), runtime = fakeRuntime();
+  const state = { memory, answers: true, closedAt: -1 };
+  const runs = () => runtime.calls.filter((c) => c[0] === "run").length;
+  const fetch = async (url) => {
+    // Browser.close ends the browser until the next container.
+    if (!state.answers || state.closedAt === runs()) throw new Error("ECONNREFUSED");
+    if (String(url).endsWith("/rooms/memory")) return state.memory ? { ok: true, status: 200, json: async () => state.memory } : { ok: false, status: 404, json: async () => ({}) };
+    return { ok: true, status: 200, json: async () => ({ Browser: "Chromium/150.0", webSocketDebuggerUrl: "ws://x/devtools/browser/abc" }) };
+  };
+  const rooms = createRooms({ home, runtime, fetch, sleep: async () => {}, image: "rooms-chrome:test", portBase: 9300, physicalMemory: 64 * 2 ** 30, connect: async () => ({ send: async (m) => { if (m === "Browser.close") state.closedAt = runs(); }, close() {} }) });
+  await rooms.init("work");
+  await rooms.set("work", settings);
+  await rooms.up("work");
+  const given = () => { const run = runtime.calls.filter((c) => c[0] === "run").at(-1); return run[run.indexOf("--memory") + 1]; };
+  return { rooms, runtime, state, given };
+};
+
+test("a room whose guard had to end tabs starts 1G larger next time, up to its grow limit, and says so", async () => {
+  const { rooms, state, given } = await growRoom({ memory: "4G", grow: "5500M" }, { totalMb: 4048, availableMb: 300, ended: 2, last: null });
+  assert.equal(given(), "4G");
+  assert.deepEqual(await rooms.down("work"), { name: "work", state: "down", grew: { from: "4G", to: "5G", ended: 2 } });
+  const e = (await rooms.events("work")).find((x) => x.event === "grew");
+  assert.deepEqual([e.from, e.to, e.ended], ["4G", "5G", 2]);
+  await rooms.up("work");
+  assert.equal(given(), "5G");
+  await rooms.down("work"); // still ending tabs: the limit, not another whole step
+  await rooms.up("work");
+  assert.equal(given(), "5500M");
+  assert.deepEqual(await rooms.down("work"), { name: "work", state: "down" }, "at its limit a room grows no more");
+  state.memory = { totalMb: 5500, availableMb: 3000, ended: 0, last: null };
+  assert.deepEqual(await rooms.set("work", { grow: "off" }), { name: "work", memory: "5500M" });
+});
+
+test("a room grows only when told it may, and only when its guard ended a tab", async () => {
+  const none = await growRoom({ memory: "4G" }, { totalMb: 4048, availableMb: 300, ended: 3, last: null });
+  assert.deepEqual(await none.rooms.down("work"), { name: "work", state: "down" });
+  const calm = await growRoom({ memory: "4G", grow: "8G" }, { totalMb: 4048, availableMb: 3000, ended: 0, last: null });
+  assert.deepEqual(await calm.rooms.down("work"), { name: "work", state: "down" });
+  const old = await growRoom({ memory: "4G", grow: "8G" }, null); // an image from before the guard
+  assert.deepEqual(await old.rooms.down("work"), { name: "work", state: "down" });
+  assert.equal(await code(() => none.rooms.set("work", { grow: "lots" })), "bad_memory");
+  assert.equal(await code(() => none.rooms.set("work", { memory: "4G", grow: "2G" })), "bad_grow");
+});
+
+test("a room that hung out of memory still grows: its watcher remembers what the guard last said", async () => {
+  const { rooms, state, given } = await growRoom({ memory: "2G", grow: "4G" }, { totalMb: 2000, availableMb: 250, ended: 1, last: null });
+  assert.equal((await rooms.heartbeat("work")).state, "up");
+  state.answers = false; // the guest stops answering; nothing can be asked at down
+  assert.deepEqual((await rooms.down("work")).grew, { from: "2G", to: "3G", ended: 1 });
+  state.answers = true;
+  await rooms.up("work");
+  assert.equal(given(), "3G");
+});

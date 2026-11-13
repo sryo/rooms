@@ -163,6 +163,7 @@ function idleMs(idle) {
   if (!m || Number(m[1]) < 1) fail("bad_idle", `idle '${idle}' must be minutes or hours, like 30m or 2h, or off`);
   return Number(m[1]) * (m[2] === "h" ? 3600000 : 60000);
 }
+const sizeOf = (mib) => mib % 1024 === 0 ? `${mib / 1024}G` : `${mib}M`;
 function sharedMemory(memory) {
   const half = Math.min(2048, Math.floor(mebibytes(memory) / 2));
   return half % 1024 === 0 ? `${half / 1024}G` : `${half}M`;
@@ -256,6 +257,32 @@ export function createRooms({
   const file = join(home, "rooms.json");
   const containerName = (name) => `rooms-${name}`;
   const heartbeatFailures = new Map();
+  // What each room's memory guard last said it had ended, for a room too far gone to ask at down.
+  const guardEnded = new Map();
+  async function endedTabs(name) {
+    try {
+      const res = await fetch(`${endpoint(name)}/rooms/memory`, { signal: AbortSignal.timeout(1000) });
+      const m = res.ok ? await res.json() : null;
+      if (Number.isFinite(m?.ended)) guardEnded.set(name, m.ended);
+    } catch {}
+    return guardEnded.get(name) ?? 0;
+  }
+  // A room allowed to grow (set grow=<most>) whose guard ended a tab starts 1G larger next time.
+  function grow(name, ended) {
+    guardEnded.delete(name);
+    if (!ended) return null;
+    return withRegistryLock(() => {
+      const reg = load(), room = reg.rooms[name];
+      if (!room?.grow) return null;
+      const now = mebibytes(room.memory ?? memory), next = Math.min(mebibytes(room.grow), now + 1024);
+      if (next <= now) return null;
+      const grew = { from: sizeOf(now), to: sizeOf(next), ended };
+      room.memory = grew.to;
+      save(reg);
+      logEvent(name, "grew", grew);
+      return grew;
+    });
+  }
   const watcherLocks = new Map();
   const agentFile = (name) => join(launchAgents, `ai.perch.rooms.${name}.plist`);
 
@@ -507,6 +534,7 @@ async function startRoom(name, { timeoutMs = 60000, image: override } = {}) {
       heartbeatFailures.delete(name);
       const cname = containerName(name);
       const state = containers().get(cname);
+      const ended = state === "running" && room.grow ? await endedTabs(name) : 0;
       if (state === "running") {
         // Tell the guest supervisor that Browser.close is deliberate before sending it.
         mkdirSync(controlDir(name), { recursive: true, mode: 0o700 });
@@ -546,7 +574,8 @@ async function startRoom(name, { timeoutMs = 60000, image: override } = {}) {
       if (awake && existsSync(awakeFile)) { awake.stop(Number(readFileSync(awakeFile, "utf8"))); rmSync(awakeFile, { force: true }); }
       rmSync(restartFile(name), { force: true });
       if (state) logEvent(name, "down", {});
-      return { name, state: "down" };
+      const grew = await grow(name, ended);
+      return { name, state: "down", ...(grew && { grew }) };
     },
 
     async heartbeat(name, { after = 3 } = {}) {
@@ -564,6 +593,7 @@ async function startRoom(name, { timeoutMs = 60000, image: override } = {}) {
       try { v = await probe(name); } catch {}
       if (v) {
         heartbeatFailures.delete(name);
+        if (room.grow) await endedTabs(name);
         // How long since a client last used the room; asked only when something would act on it.
         let idle;
         const quiet = async (ms) => {
@@ -846,6 +876,8 @@ async function startRoom(name, { timeoutMs = 60000, image: override } = {}) {
     async set(name, settings) {
       const known = {
         memory: (v) => { mebibytes(v); },
+        // The most memory the room may grow to after its guard ended tabs; off: it keeps its size.
+        grow: (v) => { if (v !== "off") mebibytes(v); },
         idle: (v) => { idleMs(v); },
         device: (v) => { if (!Object.hasOwn(DEVICES, v)) fail("bad_device", `device '${v}' is one of ${Object.keys(DEVICES).join(", ")}`); },
         // WxH, as loft takes it; stored as Chromium's --window-size.
@@ -864,6 +896,8 @@ async function startRoom(name, { timeoutMs = 60000, image: override } = {}) {
         const reg = load();
         const room = reg.rooms[name] ?? fail("room_unknown", `no room '${name}'`);
         Object.assign(room, settings);
+        if (room.grow === "off") delete room.grow;
+        if (room.grow && mebibytes(room.grow) < mebibytes(room.memory ?? memory)) fail("bad_grow", `grow '${room.grow}' is the most the room may grow to, so it can't be under its memory (${room.memory ?? memory})`);
         if (settings.device) { room.flags = DEVICES[settings.device]; if (!settings.size) delete room.size; }
         if (settings.size) room.flags = [...(room.flags ?? []).filter((f) => !f.startsWith("--window-size=")), `--window-size=${settings.size.replace("x", ",")}`];
         save(reg);
@@ -973,7 +1007,8 @@ const USAGE = `usage: rooms init <name> | up <name> | down <name>
        rooms view <name> [--no-open]         watch and drive the room
        rooms site add <name> <https-url> [--signed-out <regex>] | site list <name>
        rooms check <name>                    which sites are still signed in (exit 1 if any isn't)
-       rooms set <name> memory=4G idle=30m|off device=phone|desktop size=1280x800   used from the next up;
+       rooms set <name> memory=4G grow=6G|off idle=30m|off device=phone|desktop size=1280x800   used from the next up;
+                                             grow: a room that ran out of memory starts 1G larger, up to that much;
                                              idle stops a watched room nothing has used for that long (default 1h,
                                              off keeps it up); its tabs come back
        rooms snapshot save|list|restore|delete <name> [<id>]   a stopped room's profile
