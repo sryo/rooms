@@ -10,7 +10,7 @@ rooms gives your AI agents their own browsers to work in, so they stop borrowing
 curl -fsSL https://raw.githubusercontent.com/sryo/rooms/main/install.sh | bash
 ```
 
-It installs Apple's `container` with Homebrew if it's missing, clones rooms to `~/.rooms/src` (`ROOMS_DIR` moves it), builds the room image and runs `npm link`. Run it again to update; `ROOMS_REBUILD=1` rebuilds the image. By hand, from a clone: `container system start`, `container build --no-cache -t rooms-chrome:latest -f image/Dockerfile .`, `container builder stop`, `npm link`.
+It installs Apple's `container` with Homebrew if it's missing, and builds the room's browser. Run it again to update. [docs/guide.md](docs/guide.md) has where it goes and how to install by hand.
 
 ## Use
 
@@ -28,4 +28,8 @@ Seed a room's sign-ins from Chrome instead of signing in again: `rooms signin wo
 
 ## Safety
 
-Only your Mac can reach a room. Anything you connect to a room can use all its sign-ins, so connect only agents you trust with those accounts, and give separate jobs separate rooms. rooms never stores your passwords, and keeps its sign-ins out of Time Machine.
+Each room runs in its own small Linux machine on your Mac. It sees its own profile and its own downloads folder, and none of your other files. Only your Mac can reach a room. Anything you connect to a room can use all its sign-ins, so connect only agents you trust with those accounts, and give separate jobs separate rooms. rooms never stores your passwords, and keeps its sign-ins out of Time Machine.
+
+## Works with
+- [perch](https://github.com/sryo/perch): how your agents drive a room, and your own browser too.
+- [loft](https://github.com/sryo/loft): a hidden screen, for when the agent needs your own browser profile out of your way rather than a room.

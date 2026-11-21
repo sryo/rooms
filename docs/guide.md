@@ -2,6 +2,10 @@
 
 More than the README covers. `rooms` on its own lists every command.
 
+## Install
+
+`install.sh` installs Apple's `container` with Homebrew if it's missing, clones rooms to `~/.rooms/src` (`ROOMS_DIR` moves it), builds the room image and runs `npm link`. Run it again to update; `ROOMS_REBUILD=1` rebuilds the image. By hand, from a clone: `container system start`, `container build --no-cache -t rooms-chrome:latest -f image/Dockerfile .`, `container builder stop`, `npm link`.
+
 ## How many rooms
 
 A running room holds on to the memory it has used, so stop the ones you aren't using. Their sign-ins are kept for next time.
