@@ -19,7 +19,6 @@ COPY relay.mjs guard.mjs /opt/rooms/
 COPY image/entrypoint.sh /opt/rooms/entrypoint.sh
 COPY image/policies.json /etc/chromium/policies/managed/rooms.json
 
-USER room
 ENV DISPLAY=:99 ROOMS_CDP_PORT=9222 ROOMS_RELAY_PORT=9223
 EXPOSE 9223
 ENTRYPOINT ["dumb-init", "--", "/bin/sh", "/opt/rooms/entrypoint.sh"]

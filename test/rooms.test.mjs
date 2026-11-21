@@ -884,6 +884,13 @@ test("a room grows only when told it may, and only when its guard ended a tab", 
   assert.equal(await code(() => none.rooms.set("work", { memory: "4G", grow: "2G" })), "bad_grow");
 });
 
+test("tabs the room's kernel ended count as the guard's do", async () => {
+  const { rooms, given } = await growRoom({ memory: "2G", grow: "4G" }, { totalMb: 2000, availableMb: 900, ended: 0, last: null, oomKills: 2 });
+  assert.deepEqual((await rooms.down("work")).grew, { from: "2G", to: "3G", ended: 2 });
+  await rooms.up("work");
+  assert.equal(given(), "3G");
+});
+
 test("a room that hung out of memory still grows: its watcher remembers what the guard last said", async () => {
   const { rooms, state, given } = await growRoom({ memory: "2G", grow: "4G" }, { totalMb: 2000, availableMb: 250, ended: 1, last: null });
   assert.equal((await rooms.heartbeat("work")).state, "up");

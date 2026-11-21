@@ -257,13 +257,13 @@ export function createRooms({
   const file = join(home, "rooms.json");
   const containerName = (name) => `rooms-${name}`;
   const heartbeatFailures = new Map();
-  // What each room's memory guard last said it had ended, for a room too far gone to ask at down.
+  // The tabs each room's guard, or its kernel, last said it had ended, for a room too far gone to ask at down.
   const guardEnded = new Map();
   async function endedTabs(name) {
     try {
       const res = await fetch(`${endpoint(name)}/rooms/memory`, { signal: AbortSignal.timeout(1000) });
       const m = res.ok ? await res.json() : null;
-      if (Number.isFinite(m?.ended)) guardEnded.set(name, m.ended);
+      if (Number.isFinite(m?.ended)) guardEnded.set(name, m.ended + (Number.isFinite(m.oomKills) ? m.oomKills : 0));
     } catch {}
     return guardEnded.get(name) ?? 0;
   }

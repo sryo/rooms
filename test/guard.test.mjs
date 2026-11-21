@@ -1,5 +1,6 @@
 // The memory guard (guard.mjs), on a fake /proc: it ends the heaviest renderer only when the room's
-// available memory is under the floor, one per tick, and never the browser or another process.
+// available memory is under the floor, one per tick, and never the browser or another process. It
+// also reports how many processes the room's kernel ended.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -32,12 +33,12 @@ test("nothing is ended while memory is above the floor; below it, one renderer p
   const killed = [], lines = [];
   const g = startGuard({ proc, everyMs: 1e9, kill: (pid) => killed.push(pid), now: () => Date.parse("2026-11-11T20:00:00Z"), log: (l) => lines.push(l) });
   try {
-    assert.deepEqual(g.state, { totalMb: 3072, availableMb: 1500, ended: 0, last: null });
+    assert.deepEqual(g.state, { totalMb: 3072, availableMb: 1500, ended: 0, last: null, oomKills: 0 });
     mem(308); g.tick(); // a tenth of 3072 is 307.2
     assert.deepEqual(killed, []);
     mem(200); g.tick();
     assert.deepEqual(killed, [13]);
-    assert.deepEqual(g.state, { totalMb: 3072, availableMb: 200, ended: 1, last: { at: "2026-11-11T20:00:00.000Z", mb: 1200, availableMb: 200 } });
+    assert.deepEqual(g.state, { totalMb: 3072, availableMb: 200, ended: 1, last: { at: "2026-11-11T20:00:00.000Z", mb: 1200, availableMb: 200 }, oomKills: 0 });
     assert.match(lines[0], /200 MB of 3072 MB left; ended the heaviest tab \(1200 MB\)/);
     mem(900); g.tick();
     assert.deepEqual(killed, [13], "memory came back: nothing more is ended");
@@ -49,7 +50,7 @@ test("a renderer that can't be ended, or a /proc that can't be read, changes not
   const g = startGuard({ proc, everyMs: 1e9, kill: () => { throw new Error("ESRCH"); }, log: () => {} });
   try { assert.equal(g.state.ended, 0); } finally { g.stop(); }
   const none = startGuard({ proc: join(proc, "missing"), everyMs: 1e9, kill: () => assert.fail("killed"), log: () => {} });
-  try { assert.deepEqual(none.state, { totalMb: null, availableMb: null, ended: 0, last: null }); } finally { none.stop(); }
+  try { assert.deepEqual(none.state, { totalMb: null, availableMb: null, ended: 0, last: null, oomKills: 0 }); } finally { none.stop(); }
 });
 
 test("a small room keeps 256 MB: thrashing starts near 100 MB whatever the room's size", () => {
@@ -60,5 +61,16 @@ test("a small room keeps 256 MB: thrashing starts near 100 MB whatever the room'
     assert.deepEqual(killed, []);
     mem(255); g.tick();
     assert.deepEqual(killed, [13]);
+  } finally { g.stop(); }
+});
+
+test("the kernel's OOM kills since the room started are reported, and a /proc without them reads 0", () => {
+  const { proc } = fakeProc(PROCS);
+  const g = startGuard({ proc, everyMs: 1e9, kill: () => assert.fail("killed"), log: () => {} });
+  try {
+    assert.equal(g.state.oomKills, 0);
+    writeFileSync(join(proc, "vmstat"), "pgfault 100\noom_kill 3\nnr_free_pages 9\n");
+    g.tick();
+    assert.equal(g.state.oomKills, 3);
   } finally { g.stop(); }
 });

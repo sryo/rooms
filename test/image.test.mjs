@@ -55,8 +55,13 @@ test("ports agree across Dockerfile, entrypoint and the CLI", async () => {
   assert.match(cli, /GUEST_RELAY_PORT = 9223/);
 });
 
-test("runs as a non-root user", () => {
-  assert.match(docker, /^USER room$/m);
+test("root only turns on the kernel's thrashing protection, then everything runs as room with no capabilities", () => {
+  assert.ok(!/^USER /m.test(docker), "the entrypoint starts as root and drops it itself");
+  assert.match(entry, /echo y > \/sys\/kernel\/mm\/lru_gen\/enabled && echo 1000 > \/sys\/kernel\/mm\/lru_gen\/min_ttl_ms/);
+  assert.match(entry, /exec setpriv --reuid=room --regid=room --init-groups --inh-caps=-all --bounding-set=-all --no-new-privs \/bin\/sh "\$0" "\$@"/);
+  const drop = entry.indexOf("exec setpriv");
+  for (const later of ["/profile/SingletonLock", "Xvfb :99", "node /opt/rooms/relay.mjs", 'chromium "$@"']) assert.ok(entry.indexOf(later) > drop, `${later} runs before the drop`);
+  assert.match(entry, /\|\| echo "rooms: this kernel has no MGLRU/, "a kernel without it still starts the room");
 });
 
 test("the image installs a managed policy that disables password saving and first-run promotions", () => {

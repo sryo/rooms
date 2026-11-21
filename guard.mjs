@@ -2,7 +2,9 @@
 // thrashes instead of failing: Chromium stops answering DevTools and the room is dead until it is
 // restarted. Before that point this ends the renderer holding the most memory (its tab shows a
 // crashed page and reloads on its next navigation), so the browser and every other tab keep
-// answering. The relay serves `state` as GET /rooms/memory.
+// answering. Memory that runs out faster than a tick is the kernel's: with MGLRU's min_ttl_ms (set
+// by the entrypoint) its OOM killer ends a renderer instead, counted here as oomKills. The relay
+// serves `state` as GET /rooms/memory.
 
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -29,8 +31,10 @@ export function heaviestRenderer(proc = "/proc") {
 // what gets squeezed out is Chromium's own code. Below the floor each tick ends one renderer; the
 // next tick reads memory again, so a single heavy tab costs a single tab.
 export function startGuard({ proc = "/proc", floorMb = 256, floorShare = 0.1, everyMs = 1000, kill = (pid) => process.kill(pid, "SIGKILL"), now = Date.now, log = console.error } = {}) {
-  const state = { totalMb: null, availableMb: null, ended: 0, last: null };
+  const state = { totalMb: null, availableMb: null, ended: 0, last: null, oomKills: 0 };
   const tick = () => {
+    // The VM boots with the room, so the kernel's count since boot is the room's.
+    try { state.oomKills = Number(/^oom_kill (\d+)$/m.exec(readFileSync(join(proc, "vmstat"), "utf8"))?.[1] ?? 0); } catch {}
     let info;
     try { info = readFileSync(join(proc, "meminfo"), "utf8"); } catch { return; }
     const total = kb(info, "MemTotal"), available = kb(info, "MemAvailable");

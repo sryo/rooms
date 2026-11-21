@@ -4,6 +4,17 @@
 # exits; the profile is never replaced.
 set -eu
 
+# Root only for this: the VM has no swap, so when its memory runs out the kernel evicts Chromium's
+# own code and the browser stops answering. MGLRU with min_ttl_ms keeps the last second's working
+# set and has the OOM killer end a process instead, which picks a renderer (Chromium marks them
+# first). Then everything runs as `room`, with no capabilities and no way to gain any.
+if [ "$(id -u)" = 0 ]; then
+  { echo y > /sys/kernel/mm/lru_gen/enabled && echo 1000 > /sys/kernel/mm/lru_gen/min_ttl_ms; } 2>/dev/null \
+    || echo "rooms: this kernel has no MGLRU; a room out of memory relies on the guard alone" >&2
+  export HOME=/home/room USER=room LOGNAME=room
+  exec setpriv --reuid=room --regid=room --init-groups --inh-caps=-all --bounding-set=-all --no-new-privs /bin/sh "$0" "$@"
+fi
+
 # The token: /rooms/token, which the host can rewrite to rotate it, or ROOMS_TOKEN from an older host.
 if [ -s /rooms/token ]; then export ROOMS_TOKEN_FILE=/rooms/token
 else [ -n "${ROOMS_TOKEN:-}" ] || { echo "rooms: ROOMS_TOKEN missing; refusing to start" >&2; exit 64; }; fi
